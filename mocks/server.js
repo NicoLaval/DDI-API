@@ -41,40 +41,49 @@ function findById(data, id) {
   );
 }
 
+// Helper to parse query values (supports repeated params and comma-separated values)
+function parseMultiValue(value) {
+  if (value === undefined || value === null) return [];
+  const values = Array.isArray(value) ? value : [value];
+  return values
+    .flatMap(v => String(v).split(','))
+    .map(v => v.trim())
+    .filter(Boolean);
+}
+
 // Helper to filter data by query parameters
-function filterData(data, query) {
+function filterData(data, query, resourceType = null) {
   if (!data || !Array.isArray(data)) return data;
   
   let filtered = [...data];
   
   // Filter by URN
   if (query.urn) {
-    filtered = filtered.filter(item => item.urn === query.urn);
+    const urns = parseMultiValue(query.urn);
+    filtered = filtered.filter(item => urns.includes(item.urn));
   }
   
   // Filter by agencyID
   if (query.agencyID) {
-    const agencyIDs = Array.isArray(query.agencyID) ? query.agencyID : [query.agencyID];
+    const agencyIDs = parseMultiValue(query.agencyID);
     filtered = filtered.filter(item => agencyIDs.includes(item.agencyID));
   }
   
   // Filter by resourceID (id)
   if (query.resourceID || query.id) {
-    const ids = Array.isArray(query.resourceID || query.id) 
-      ? (query.resourceID || query.id) 
-      : [query.resourceID || query.id];
+    const ids = parseMultiValue(query.resourceID || query.id);
     filtered = filtered.filter(item => ids.includes(item.id));
   }
   
   // Filter by version
   if (query.version) {
-    const versions = Array.isArray(query.version) ? query.version : [query.version];
+    const versions = parseMultiValue(query.version);
     filtered = filtered.filter(item => versions.includes(item.version));
   }
   
   // Filter by variableID (for variables list)
   if (query.variableID) {
-    const ids = Array.isArray(query.variableID) ? query.variableID : [query.variableID];
+    const ids = parseMultiValue(query.variableID);
     filtered = filtered.filter(item => {
       const itemId = item.id || extractId({ id: item.id, urn: item.urn });
       return ids.some(id => itemId === id || itemId === extractId({ id, urn: id }));
@@ -83,7 +92,7 @@ function filterData(data, query) {
   
   // Filter by conceptID (for concepts list)
   if (query.conceptID) {
-    const ids = Array.isArray(query.conceptID) ? query.conceptID : [query.conceptID];
+    const ids = parseMultiValue(query.conceptID);
     filtered = filtered.filter(item => {
       const itemId = item.id || extractId({ id: item.id, urn: item.urn });
       return ids.some(id => itemId === id || itemId === extractId({ id, urn: id }));
@@ -92,7 +101,7 @@ function filterData(data, query) {
   
   // Filter by conceptReference (for variables)
   if (query.conceptReference) {
-    const refs = Array.isArray(query.conceptReference) ? query.conceptReference : [query.conceptReference];
+    const refs = parseMultiValue(query.conceptReference);
     filtered = filtered.filter(item => {
       if (!item.conceptReference) return false;
       const itemRefId = extractId(item.conceptReference);
@@ -101,6 +110,167 @@ function filterData(data, query) {
         return itemRefId === refId;
       });
     });
+  }
+
+  // Filter concepts by conceptSchemeID
+  if (resourceType === 'concepts' && query.conceptSchemeID) {
+    const schemeIds = parseMultiValue(query.conceptSchemeID).map(id => extractId({ id, urn: id }) || id);
+    const schemes = loadMock('concept-schemes.json') || [];
+    const allowedConceptIds = new Set();
+
+    schemes
+      .filter(scheme => schemeIds.includes(scheme.id) || schemeIds.includes(extractId(scheme)))
+      .forEach(scheme => {
+        (scheme.concepts || []).forEach(conceptRef => {
+          const conceptId = extractId(conceptRef);
+          if (conceptId) allowedConceptIds.add(conceptId);
+        });
+      });
+
+    filtered = filtered.filter(item => allowedConceptIds.has(item.id));
+  }
+
+  // Filter variables by studyID (via study-unit -> dataset -> variable scheme)
+  if (resourceType === 'variables' && query.studyID) {
+    const studyIds = parseMultiValue(query.studyID).map(id => extractId({ id, urn: id }) || id);
+    const studies = loadMock('study-units.json') || [];
+    const datasets = loadMock('datasets.json') || [];
+    const variableSchemeIds = new Set();
+    const allowedVariableIds = new Set();
+
+    const datasetIdsInStudy = new Set();
+    studies
+      .filter(study => studyIds.includes(study.id) || studyIds.includes(extractId(study)))
+      .forEach(study => {
+        (study.dataSetReference || []).forEach(datasetRef => {
+          const datasetId = extractId(datasetRef);
+          if (datasetId) datasetIdsInStudy.add(datasetId);
+        });
+      });
+
+    datasets
+      .filter(dataset => datasetIdsInStudy.has(dataset.id))
+      .forEach(dataset => {
+        const variableSchemeId = extractId(dataset.variableSchemeReference);
+        if (variableSchemeId) variableSchemeIds.add(variableSchemeId);
+      });
+
+    const variableSchemes = loadMock('variable-schemes.json') || [];
+    variableSchemes
+      .filter(scheme => variableSchemeIds.has(scheme.id))
+      .forEach(scheme => {
+        (scheme.variables || []).forEach(variableRef => {
+          const variableId = extractId(variableRef);
+          if (variableId) allowedVariableIds.add(variableId);
+        });
+      });
+
+    filtered = filtered.filter(item => allowedVariableIds.has(item.id));
+  }
+
+  // Filter variables by datasetID (via dataset -> variable scheme)
+  if (resourceType === 'variables' && query.datasetID) {
+    const datasetIds = parseMultiValue(query.datasetID).map(id => extractId({ id, urn: id }) || id);
+    const datasets = loadMock('datasets.json') || [];
+    const variableSchemeIds = new Set();
+    const allowedVariableIds = new Set();
+
+    datasets
+      .filter(dataset => datasetIds.includes(dataset.id) || datasetIds.includes(extractId(dataset)))
+      .forEach(dataset => {
+        const variableSchemeId = extractId(dataset.variableSchemeReference);
+        if (variableSchemeId) variableSchemeIds.add(variableSchemeId);
+      });
+
+    const variableSchemes = loadMock('variable-schemes.json') || [];
+    variableSchemes
+      .filter(scheme => variableSchemeIds.has(scheme.id))
+      .forEach(scheme => {
+        (scheme.variables || []).forEach(variableRef => {
+          const variableId = extractId(variableRef);
+          if (variableId) allowedVariableIds.add(variableId);
+        });
+      });
+
+    filtered = filtered.filter(item => allowedVariableIds.has(item.id));
+  }
+
+  // Filter code lists by codeListSchemeID
+  if (resourceType === 'code-lists' && query.codeListSchemeID) {
+    const schemeIds = parseMultiValue(query.codeListSchemeID).map(id => extractId({ id, urn: id }) || id);
+    const schemes = loadMock('code-list-schemes.json') || [];
+    const allowedCodeListIds = new Set();
+
+    schemes
+      .filter(scheme => schemeIds.includes(scheme.id) || schemeIds.includes(extractId(scheme)))
+      .forEach(scheme => {
+        (scheme.codeLists || []).forEach(codeListRef => {
+          const codeListId = extractId(codeListRef);
+          if (codeListId) allowedCodeListIds.add(codeListId);
+        });
+      });
+
+    filtered = filtered.filter(item => allowedCodeListIds.has(item.id));
+  }
+
+  // Filter code lists by categorySchemeReference (categories referenced by codes)
+  if (resourceType === 'code-lists' && query.categorySchemeReference) {
+    const schemeIds = parseMultiValue(query.categorySchemeReference).map(id => extractId({ id, urn: id }) || id);
+    const categorySchemes = loadMock('category-schemes.json') || [];
+    const allowedCategoryIds = new Set();
+
+    categorySchemes
+      .filter(scheme => schemeIds.includes(scheme.id) || schemeIds.includes(extractId(scheme)))
+      .forEach(scheme => {
+        (scheme.categories || []).forEach(categoryRef => {
+          const categoryId = extractId(categoryRef);
+          if (categoryId) allowedCategoryIds.add(categoryId);
+        });
+      });
+
+    filtered = filtered.filter(codeList => {
+      const codes = codeList.codes || [];
+      return codes.some(code => {
+        const categoryId = extractId(code.categoryReference);
+        return categoryId && allowedCategoryIds.has(categoryId);
+      });
+    });
+  }
+
+  // Filter physical instances by datasetID
+  if (resourceType === 'physical-instances' && query.datasetID) {
+    const datasetIds = parseMultiValue(query.datasetID).map(id => extractId({ id, urn: id }) || id);
+    filtered = filtered.filter(item => {
+      const refId = extractId(item.dataSetReference);
+      return refId && datasetIds.includes(refId);
+    });
+  }
+
+  // Filter datasets by physicalInstanceID
+  if (resourceType === 'datasets' && query.physicalInstanceID) {
+    const physicalIds = parseMultiValue(query.physicalInstanceID).map(id => extractId({ id, urn: id }) || id);
+    filtered = filtered.filter(item => {
+      const refId = extractId(item.physicalInstanceReference);
+      return refId && physicalIds.includes(refId);
+    });
+  }
+
+  // Filter datasets by studyID
+  if (resourceType === 'datasets' && query.studyID) {
+    const studyIds = parseMultiValue(query.studyID).map(id => extractId({ id, urn: id }) || id);
+    const studies = loadMock('study-units.json') || [];
+    const allowedDatasetIds = new Set();
+
+    studies
+      .filter(study => studyIds.includes(study.id) || studyIds.includes(extractId(study)))
+      .forEach(study => {
+        (study.dataSetReference || []).forEach(datasetRef => {
+          const datasetId = extractId(datasetRef);
+          if (datasetId) allowedDatasetIds.add(datasetId);
+        });
+      });
+
+    filtered = filtered.filter(item => allowedDatasetIds.has(item.id));
   }
   
   // Pagination
@@ -417,10 +587,8 @@ function getResponseFormat(req) {
     return 'json';
   }
   
-  // For any other Accept header (browser defaults, generic formats, etc.),
-  // default to DDI JSON instead of returning 406
-  // This makes the API more user-friendly: JSON by default unless XML is explicitly requested
-  return 'json';
+  // Unsupported/non-DDI Accept header
+  return null;
 }
 
 // Helper to send response in appropriate format
@@ -466,7 +634,7 @@ app.get('/ddi/v1/variables', (req, res) => {
   let data = loadMock('variables.json');
   
   // Apply filters
-  data = filterData(data, req.query);
+  data = filterData(data, req.query, 'variables');
   
   // Resolve references if requested
   if (data && references !== 'none') {
@@ -496,7 +664,7 @@ app.get('/ddi/v1/concepts', (req, res) => {
   let data = loadMock('concepts.json');
   
   // Apply filters
-  data = filterData(data, req.query);
+  data = filterData(data, req.query, 'concepts');
   
   // Resolve references if requested
   if (data && references !== 'none') {
@@ -586,7 +754,7 @@ app.get('/ddi/v1/code-lists', (req, res) => {
   let data = loadMock('code-lists.json');
   
   // Apply filters
-  data = filterData(data, req.query);
+  data = filterData(data, req.query, 'code-lists');
   
   // Resolve references if requested
   if (data && references !== 'none') {
@@ -706,7 +874,7 @@ app.get('/ddi/v1/physical-instances', (req, res) => {
   let data = loadMock('physical-instances.json');
   
   // Apply filters
-  data = filterData(data, req.query);
+  data = filterData(data, req.query, 'physical-instances');
   
   // Resolve references if requested
   if (data && references !== 'none') {
@@ -736,7 +904,7 @@ app.get('/ddi/v1/datasets', (req, res) => {
   let data = loadMock('datasets.json');
   
   // Apply filters
-  data = filterData(data, req.query);
+  data = filterData(data, req.query, 'datasets');
   
   // Resolve references if requested
   if (data && references !== 'none') {
