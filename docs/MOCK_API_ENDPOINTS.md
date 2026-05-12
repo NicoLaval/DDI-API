@@ -44,11 +44,27 @@ The format is determined by the `Accept` header in your request.
 
 **Note:** Generic formats (`application/json`, `application/xml`, `text/xml`) are not supported and will return a `406 Not Acceptable` error.
 
+### Aggregated items (`GET /ddi/v1/items`)
+
+Use this first when you want the full mock corpus in one round-trip: all collections (variables, concepts, schemes, study units, datasets, …) are returned together as an **`ItemCatalog`** object in DDI JSON, or as one flattened `ResourcePackage` in DDI XML.
+
+Filtering matches the **per-type list endpoints**: you can pass the **same query parameters** as for `GET /variables`, `GET /concepts`, etc. (union documented in `ddi-rest.yaml` on **`GET /items`**). Each parameter only affects the collections where it applies (e.g. `variableID` narrows `variables`; `studyID` narrows variables and datasets as on those routes). **Plain IDs** in those filters still require **`agencyID`** and **`version`** on the same request; **URNs** do not.
+
+**Single item (polymorphic):** **`GET /ddi/v1/items/{itemIdentifier}`** — same resolution rules as type-specific item URLs: path may be a full **URN**, a **`{agencyID}:{id}:{version}`** triple (without `urn:ddi:`), or a **plain id** with **`agencyID`** and **`version`** in the query. The server walks collections in a fixed order and returns the first match (see OpenAPI).
+
+- **`offset`** / **`limit`**: applied **per collection** (as if you called each list endpoint with the same query).
+- **`references`**: resolve nested references like on collection endpoints; payloads can be large.
+
 ### All Endpoints Supported
 
 All endpoints from the OpenAPI specification are implemented:
 
-**List Endpoints** (with filtering and pagination):
+**Aggregated items:**
+
+- `GET /ddi/v1/items` — all item collections in one response (same filter query params as the list endpoints; see OpenAPI)
+- `GET /ddi/v1/items/{itemIdentifier}` — one item, polymorphic (URN, `agency:id:version` in path, or plain id + `agencyID` / `version` query)
+
+**List endpoints** (with filtering and pagination), by type:
 - `GET /ddi/v1/variables`
 - `GET /ddi/v1/concepts`
 - `GET /ddi/v1/concept-schemes`
@@ -72,10 +88,10 @@ All endpoints from the OpenAPI specification are implemented:
 - `GET /ddi/v1/physical-instances/{physicalInstanceID}`
 - `GET /ddi/v1/datasets/{datasetID}`
 
-**Search Endpoints**:
+**Search endpoints**:
 - `GET /ddi/v1/search/labels` - Search resources by label
 
-**Utility Endpoints**:
+**Utility endpoints**:
 - `GET /health` - Health check
 - `GET /` - Service information
 
@@ -95,6 +111,21 @@ The mock server will run on `http://localhost:4010`
 ```bash
 # Query suffix for plain IDs in path (required unless you use a full URN in the path)
 # ?agencyID=example.agency&version=1.0.0
+
+# Narrow to one concept via polymorphic item URL (scoped triple in path — no query needed)
+curl "http://localhost:4010/ddi/v1/items/example.agency:concept-001:1.0.0"
+
+# Same concept via full URN in path
+curl "http://localhost:4010/ddi/v1/items/urn:ddi:example.agency:concept-001:1.0.0"
+
+# All item collections at once (ItemCatalog — recommended to explore the mock)
+curl http://localhost:4010/ddi/v1/items
+
+# Same, with agency/version narrowing each collection
+curl "http://localhost:4010/ddi/v1/items?agencyID=example.agency&version=1.0.0"
+
+# Narrow variables via variableID (plain ID needs agency + version, same as GET /variables)
+curl "http://localhost:4010/ddi/v1/items?variableID=var-001&agencyID=example.agency&version=1.0.0"
 
 # Get all variables (DDI JSON - default)
 curl http://localhost:4010/ddi/v1/variables

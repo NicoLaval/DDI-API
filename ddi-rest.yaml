@@ -6,6 +6,8 @@ info:
     The RESTful API for DDI (Data Documentation Initiative).
     
     This API provides access to DDI metadata resources including study units, physical instances, datasets, variables, concepts, concept schemes, and variable schemes.
+
+    **Bulk retrieval:** `GET /items` returns every exposed item collection in one response (`ItemCatalog` in DDI JSON), with the **same query-parameter union as the collection list endpoints**. **`GET /items/{itemIdentifier}`** returns a single item across types (URN, `{agency}:{id}:{version}` segment, or plain id + `agencyID` & `version` query). Use per-type URLs when you know the resource type.
     
     DDI is an international standard for describing statistical and social science data.
 
@@ -33,6 +35,33 @@ info:
 servers:
   - description: Mock API Server
     url: http://ddi-api.making-sense.info/ddi/v1
+
+tags:
+  - name: Items
+    description: |
+      Aggregated list (`GET /items`) and polymorphic item access (`GET /items/{itemIdentifier}`) across all exposed DDI collections.
+  - name: Search
+    description: Cross-resource label search.
+  - name: Variables
+    description: Variables and variable schemes.
+  - name: Concepts
+    description: Concepts and concept schemes.
+  - name: Concept Schemes
+    description: Concept scheme collections.
+  - name: Variable Schemes
+    description: Variable scheme collections.
+  - name: Code List Schemes
+    description: Code list scheme collections.
+  - name: Code Lists
+    description: Code lists.
+  - name: Category Schemes
+    description: Category schemes.
+  - name: Study Units
+    description: Study units.
+  - name: Physical Instances
+    description: Physical instances (data files).
+  - name: Datasets
+    description: Datasets.
 
 x-commons:
   common_responses: &common_responses
@@ -63,7 +92,78 @@ x-commons:
     "503":
       $ref: "#/components/responses/503"
 
+  # Union of all collection-list query parameters; each filter applies to the relevant collection(s), as on the per-type list endpoints.
+  parameters_items_get: &parameters_items_get
+    - $ref: "#/components/parameters/urn"
+    - $ref: "#/components/parameters/agencyID"
+    - $ref: "#/components/parameters/version"
+    - $ref: "#/components/parameters/resourceID"
+    - $ref: "#/components/parameters/variableID"
+    - $ref: "#/components/parameters/conceptID"
+    - $ref: "#/components/parameters/conceptSchemeID"
+    - $ref: "#/components/parameters/variableSchemeID"
+    - $ref: "#/components/parameters/codeListSchemeID"
+    - $ref: "#/components/parameters/codeListID"
+    - $ref: "#/components/parameters/categorySchemeID"
+    - $ref: "#/components/parameters/categorySchemeReference"
+    - $ref: "#/components/parameters/conceptReference"
+    - $ref: "#/components/parameters/studyID"
+    - $ref: "#/components/parameters/studyUnitID"
+    - $ref: "#/components/parameters/datasetID"
+    - $ref: "#/components/parameters/physicalInstanceID"
+    - $ref: "#/components/parameters/references"
+    - $ref: "#/components/parameters/offset"
+    - $ref: "#/components/parameters/limit"
+
 paths:
+  /items:
+    get:
+      summary: "Get all items (aggregated)"
+      tags:
+        - Items
+      description: |
+        Returns every DDI item collection exposed by this API version in a single payload (variables, concepts, schemes, study units, datasets, etc.).
+
+        **Filtering** uses the **same query parameters as the per-type list endpoints** (`GET /variables`, `GET /concepts`, …). Each parameter affects only the collections where it applies (e.g. `variableID` narrows `variables`, `conceptSchemeID` narrows concepts when resolving scheme membership, `studyID` narrows variables and datasets as on those lists). **`urn`** filters by resource URN within each collection; **`resourceID`** / typed ID parameters follow the usual rule: **plain IDs require `agencyID` and `version`** on the same request.
+
+        **`offset`** and **`limit`** apply **per collection** (same as calling each list endpoint with the same query).
+
+        **`references`** resolves nested references per item like other collection endpoints; responses can be large.
+
+        **DDI JSON** returns a grouped object (`ItemCatalog`). **DDI XML** returns a single `ResourcePackage` containing all items in a fixed order (variables first, then concepts, …, then datasets).
+      parameters: *parameters_items_get
+      responses:
+        <<: *common_responses
+        "200":
+          $ref: "#/components/responses/200-items"
+
+  /items/{itemIdentifier}:
+    get:
+      summary: "Get item by identifier (polymorphic)"
+      tags:
+        - Items
+      description: |
+        Retrieves **one** DDI item when you know its identity but not necessarily its type. Resolution uses the same rules as type-specific item URLs (`GET /concepts/{conceptID}`, …).
+
+        **`itemIdentifier`** (one path segment, before URL decoding) may be:
+
+        - A **DDI URN** (`urn:ddi:{agency}:{id}:{version}`), e.g. `urn:ddi:example.agency:concept-001:1.0.0`
+        - A **scoped triple** `{agencyID}:{id}:{version}` without the `urn:ddi:` prefix, e.g. `example.agency:concept-001:1.0.0` (agency may contain dots; `id` and `version` must not contain `:`)
+        - A **plain id** only if **`agencyID`** and **`version`** query parameters are present on the same request (same as other item-by-id routes)
+
+        Search order across collections is fixed (variables, concepts, concept schemes, …, datasets); the **first** match wins. Use a type-specific URL when you need a deterministic type.
+
+        Optional **`references`** resolves nested content like on other single-resource GETs.
+      parameters:
+        - $ref: "#/components/parameters/itemIdentifier-path"
+        - $ref: "#/components/parameters/agencyID"
+        - $ref: "#/components/parameters/version"
+        - $ref: "#/components/parameters/references"
+      responses:
+        <<: *common_responses
+        "200":
+          $ref: "#/components/responses/200-item-by-id"
+
   /variables:
     get:
       summary: "Get variables"
@@ -664,6 +764,22 @@ components:
         examples:
           - "urn:ddi:example.agency:var-001:1.0.0"
           - "var-001"
+    itemIdentifier-path:
+      in: path
+      name: itemIdentifier
+      description: |
+        Polymorphic item identity (see `GET /items/{itemIdentifier}`).
+
+        - **URN:** `urn:ddi:{agency}:{id}:{version}` (full string in this path segment).
+        - **Scoped triple:** `{agencyID}:{id}:{version}` without `urn:ddi:` (e.g. `example.agency:concept-001:1.0.0`).
+        - **Plain id:** e.g. `concept-001` — requires **`agencyID`** and **`version`** query parameters.
+      required: true
+      schema:
+        type: string
+        examples:
+          - "urn:ddi:example.agency:concept-001:1.0.0"
+          - "example.agency:concept-001:1.0.0"
+          - "concept-001"
     conceptID:
       in: query
       name: conceptID
@@ -1547,6 +1663,41 @@ components:
             type: array
             items:
               $ref: "#/components/schemas/LabelSearchResult"
+    "200-items":
+      description: OK - All items (aggregated collections)
+      content:
+        application/vnd.ddi.structure+xml;version=3.3:
+          description: |
+            DDI 3.3 compliant XML: one `g:ResourcePackage` containing all items, in order:
+            variables, concepts, concept schemes, variable schemes, code lists, code list schemes,
+            category schemes, categories, study units, physical instances, datasets.
+          schema:
+            type: string
+        application/vnd.ddi.structure+json;version=3.3:
+          schema:
+            $ref: "#/components/schemas/ItemCatalog"
+    "200-item-by-id":
+      description: OK - Single DDI item (concrete schema depends on which collection matched)
+      content:
+        application/vnd.ddi.structure+xml;version=3.3:
+          description: |
+            DDI 3.3 compliant XML: one `g:ResourcePackage` wrapping the matched item element (same layout as the corresponding type-specific GET).
+          schema:
+            type: string
+        application/vnd.ddi.structure+json;version=3.3:
+          schema:
+            oneOf:
+              - $ref: "#/components/schemas/Variable"
+              - $ref: "#/components/schemas/Concept"
+              - $ref: "#/components/schemas/ConceptScheme"
+              - $ref: "#/components/schemas/VariableScheme"
+              - $ref: "#/components/schemas/CodeList"
+              - $ref: "#/components/schemas/CodeListScheme"
+              - $ref: "#/components/schemas/CategoryScheme"
+              - $ref: "#/components/schemas/Category"
+              - $ref: "#/components/schemas/StudyUnit"
+              - $ref: "#/components/schemas/PhysicalInstance"
+              - $ref: "#/components/schemas/DataSet"
     "200-study-units":
       description: OK - List of study units
       content:
@@ -2715,6 +2866,67 @@ components:
         - urn
         - id
         - matchedLabel
+    ItemCatalog:
+      type: object
+      description: |
+        Aggregated response: one array per DDI item type exposed by the API.
+      required:
+        - variables
+        - concepts
+        - conceptSchemes
+        - variableSchemes
+        - codeLists
+        - codeListSchemes
+        - categorySchemes
+        - categories
+        - studyUnits
+        - physicalInstances
+        - dataSets
+      properties:
+        variables:
+          type: array
+          items:
+            $ref: "#/components/schemas/Variable"
+        concepts:
+          type: array
+          items:
+            $ref: "#/components/schemas/Concept"
+        conceptSchemes:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConceptScheme"
+        variableSchemes:
+          type: array
+          items:
+            $ref: "#/components/schemas/VariableScheme"
+        codeLists:
+          type: array
+          items:
+            $ref: "#/components/schemas/CodeList"
+        codeListSchemes:
+          type: array
+          items:
+            $ref: "#/components/schemas/CodeListScheme"
+        categorySchemes:
+          type: array
+          items:
+            $ref: "#/components/schemas/CategoryScheme"
+        categories:
+          type: array
+          items:
+            $ref: "#/components/schemas/Category"
+        studyUnits:
+          type: array
+          items:
+            $ref: "#/components/schemas/StudyUnit"
+        physicalInstances:
+          type: array
+          items:
+            $ref: "#/components/schemas/PhysicalInstance"
+        dataSets:
+          type: array
+          items:
+            $ref: "#/components/schemas/DataSet"
     Identifier:
       type: object
       description: |

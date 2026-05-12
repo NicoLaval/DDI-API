@@ -195,6 +195,147 @@ function parseMultiValue(value) {
     .filter(Boolean);
 }
 
+/**
+ * Build aggregated ItemCatalog using the same filterData rules as each list endpoint.
+ * @returns {{ ok: true, bundle: object } | { ok: false, status: number, message: string }}
+ */
+function buildItemCatalog(query) {
+  const catalogDefs = [
+    ['variables', 'variables.json', 'variables'],
+    ['concepts', 'concepts.json', 'concepts'],
+    ['conceptSchemes', 'concept-schemes.json', null],
+    ['variableSchemes', 'variable-schemes.json', null],
+    ['codeLists', 'code-lists.json', 'code-lists'],
+    ['codeListSchemes', 'code-list-schemes.json', null],
+    ['categorySchemes', 'category-schemes.json', null],
+    ['categories', 'categories.json', null],
+    ['studyUnits', 'study-units.json', null],
+    ['physicalInstances', 'physical-instances.json', 'physical-instances'],
+    ['dataSets', 'datasets.json', 'datasets']
+  ];
+
+  const bundle = {};
+  for (const [key, file, resourceType] of catalogDefs) {
+    const data = loadMock(file) || [];
+    const fd = filterData(data, query, resourceType);
+    if (!fd.ok) {
+      return { ok: false, status: fd.status, message: fd.message };
+    }
+    bundle[key] = fd.data;
+  }
+  return { ok: true, bundle };
+}
+
+/** Order used to resolve polymorphic GET /items/{itemIdentifier} (first match wins). */
+const ITEM_SINGLE_SEARCH_ORDER = [
+  ['variables.json', 'variable'],
+  ['concepts.json', 'concept'],
+  ['concept-schemes.json', 'conceptScheme'],
+  ['variable-schemes.json', 'variableScheme'],
+  ['code-lists.json', 'codeList'],
+  ['code-list-schemes.json', 'codeListScheme'],
+  ['category-schemes.json', 'categoryScheme'],
+  ['categories.json', 'category'],
+  ['study-units.json', 'studyUnit'],
+  ['physical-instances.json', 'physicalInstance'],
+  ['datasets.json', 'dataSet']
+];
+
+/**
+ * Parse `{agencyID}:{id}:{version}` from a single path segment (not a DDI URN).
+ * Agency may contain dots; id and version must not contain ':'.
+ */
+function parseAgencyIdVersionTriple(segment) {
+  if (!segment || typeof segment !== 'string') return null;
+  const t = segment.trim();
+  if (!t || isDdiUrn(t)) return null;
+  const last = t.lastIndexOf(':');
+  if (last <= 0) return null;
+  const version = t.slice(last + 1);
+  const rest = t.slice(0, last);
+  const mid = rest.lastIndexOf(':');
+  if (mid <= 0) return null;
+  const id = rest.slice(mid + 1);
+  const agencyID = rest.slice(0, mid);
+  if (!agencyID || !id || !version) return null;
+  if (id.includes(':') || version.includes(':')) return null;
+  return { agencyID, id, version };
+}
+
+/**
+ * Resolve one item across all collections (polymorphic item URL).
+ * @returns {{ item: object, xmlRoot: string } | { error: 'notfound' } | { error: 'badrequest', message: string }}
+ */
+function findItemByPathSegment(itemIdentifier, query) {
+  let decoded = String(itemIdentifier || '').trim();
+  if (!decoded) return { error: 'notfound' };
+  try {
+    decoded = decodeURIComponent(decoded);
+  } catch {
+    // keep raw
+  }
+
+  if (isDdiUrn(decoded)) {
+    for (const [file, xmlRoot] of ITEM_SINGLE_SEARCH_ORDER) {
+      const data = loadMock(file);
+      if (!data || !Array.isArray(data)) continue;
+      const item = data.find(it => urnsEqual(it.urn, decoded));
+      if (item) return { item, xmlRoot };
+    }
+    return { error: 'notfound' };
+  }
+
+  const triple = parseAgencyIdVersionTriple(decoded);
+  if (triple) {
+    const { agencyID: a, id, version } = triple;
+    for (const [file, xmlRoot] of ITEM_SINGLE_SEARCH_ORDER) {
+      const data = loadMock(file);
+      if (!data || !Array.isArray(data)) continue;
+      const item = data.find(
+        it =>
+          it.id === id &&
+          String(it.agencyID).toLowerCase() === String(a).toLowerCase() &&
+          it.version === version
+      );
+      if (item) return { item, xmlRoot };
+    }
+    return { error: 'notfound' };
+  }
+
+  for (const [file, xmlRoot] of ITEM_SINGLE_SEARCH_ORDER) {
+    const data = loadMock(file);
+    if (!data || !Array.isArray(data)) continue;
+    const fr = findResourceForRequest(data, decoded, query);
+    if (fr.error === 'badrequest') {
+      return { error: 'badrequest', message: fr.message };
+    }
+    if (fr.item) return { item: fr.item, xmlRoot };
+  }
+  return { error: 'notfound' };
+}
+
+/** Flatten grouped ItemCatalog into one array for DDI XML (fixed order). */
+function flattenItemCatalogForXml(bundle) {
+  const order = [
+    'variables',
+    'concepts',
+    'conceptSchemes',
+    'variableSchemes',
+    'codeLists',
+    'codeListSchemes',
+    'categorySchemes',
+    'categories',
+    'studyUnits',
+    'physicalInstances',
+    'dataSets'
+  ];
+  const flat = [];
+  for (const key of order) {
+    (bundle[key] || []).forEach(item => flat.push(item));
+  }
+  return flat;
+}
+
 // Helper to filter data by query parameters
 function filterData(data, query, resourceType = null) {
   const validation = validatePlainIdentifierParams(query);
@@ -792,6 +933,73 @@ function sendResponse(req, res, data, rootElementName) {
   }
 }
 
+// All items (aggregated collections) — register before parameterized routes
+app.get('/ddi/v1/items', (req, res) => {
+  const references = req.query.references || 'none';
+  const built = buildItemCatalog(req.query);
+  if (!built.ok) {
+    return res.status(built.status).json({
+      error: 'Bad Request',
+      message: built.message
+    });
+  }
+  let bundle = built.bundle;
+  if (references !== 'none') {
+    for (const key of Object.keys(bundle)) {
+      bundle[key] = bundle[key].map(item => resolveReferences(item, references));
+    }
+  }
+
+  const format = getResponseFormat(req);
+  if (format === null) {
+    res.status(406).json({
+      error: 'Not Acceptable',
+      message:
+        'Only application/vnd.ddi.structure+json;version=3.3 and application/vnd.ddi.structure+xml;version=3.3 are supported',
+      supportedFormats: [
+        'application/vnd.ddi.structure+json;version=3.3',
+        'application/vnd.ddi.structure+xml;version=3.3'
+      ]
+    });
+    return;
+  }
+
+  if (format === 'xml') {
+    res.set('Content-Type', 'application/vnd.ddi.structure+xml;version=3.3');
+    try {
+      const flat = flattenItemCatalogForXml(bundle);
+      const xml = convertToDDIXML(flat, 'g:ResourcePackage');
+      res.send(xml);
+    } catch (error) {
+      console.error('DDI XML conversion error:', error);
+      res.status(500).json({
+        error: 'Internal Server Error',
+        message: 'Failed to convert response to DDI XML format'
+      });
+    }
+  } else {
+    res.set('Content-Type', 'application/vnd.ddi.structure+json;version=3.3');
+    res.json(bundle);
+  }
+});
+
+// Single item by identifier (polymorphic) — same path resolution rules as type-specific item URLs
+app.get('/ddi/v1/items/:itemIdentifier', (req, res) => {
+  const references = req.query.references || 'none';
+  const found = findItemByPathSegment(req.params.itemIdentifier, req.query);
+  if (found.error === 'badrequest') {
+    return res.status(400).json({
+      error: 'Bad Request',
+      message: found.message
+    });
+  }
+  if (found.error === 'notfound') {
+    return res.status(404).json({ error: 'Item not found' });
+  }
+  const resolved = resolveReferences(found.item, references);
+  sendResponse(req, res, resolved, found.xmlRoot);
+});
+
 // Variables endpoints
 app.get('/ddi/v1/variables', (req, res) => {
   const references = req.query.references || 'none';
@@ -1351,6 +1559,10 @@ app.get('/', (req, res) => {
     timestamp: new Date().toISOString(),
     endpoints: {
       health: '/health',
+      items: {
+        list: '/ddi/v1/items',
+        item: '/ddi/v1/items/{itemIdentifier}'
+      },
       variables: {
         list: '/ddi/v1/variables',
         item: '/ddi/v1/variables/{variableID}'

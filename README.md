@@ -12,6 +12,8 @@ REST API for DDI (Data Documentation Initiative), an international standard for 
 
 This API provides access to DDI metadata resources.
 
+**Recommended entry points:** **`GET /ddi/v1/items`** (full `ItemCatalog`) and **`GET /ddi/v1/items/{itemIdentifier}`** (one object, polymorphic — URN, `agency:id:version` in the path, or plain id + `agencyID` / `version` query). Query parameters for the list are the **same union as on the per-type list endpoints**. Prefer **`/variables`**, **`/concepts`**, etc. when you already know the type.
+
 For detailed API usage, endpoints, and examples, see the [Mock API Endpoints Documentation](docs/MOCK_API_ENDPOINTS.md).
 
 ### Resource identifiers
