@@ -8,6 +8,19 @@ info:
     This API provides access to DDI metadata resources including study units, physical instances, datasets, variables, concepts, concept schemes, and variable schemes.
     
     DDI is an international standard for describing statistical and social science data.
+
+    ## Identifier Resolution
+
+    Resource identifiers are resolved using an URN-first strategy:
+    - If an identifier is a DDI URN (`urn:ddi:{agency}:{id}:{version}`), the API resolves it directly.
+    - If an identifier is a plain ID, it is interpreted in agency scope and requires `agencyID` and `version` query parameters on the **same** request.
+    - Plain IDs without `agencyID` and `version` are invalid and return `400 Bad Request`.
+    - On **list** endpoints, the same rule applies whenever a query parameter carries a plain resource id (`resourceID`, `variableID`, `conceptReference`, `studyID`, etc.): both `agencyID` and `version` must be present if **any** of those values are plain IDs (values that are already full URNs do not need extra scope).
+    - The API does **not** resolve a bare plain ID globally across agencies or versions; there is no implicit disambiguation when multiple matches could exist.
+
+    ## Unsupported Accept headers
+
+    Only DDI vendor media types are supported. Generic types such as `application/json` or `application/xml` alone return `406 Not Acceptable`.
     
     ## Response Formats
     
@@ -91,7 +104,7 @@ paths:
         
         The variableID can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}")
-        - An ID (if agencyID and version are provided as query parameters)
+        - An ID (requires agencyID and version query parameters)
         
         Returns detailed information about the variable including its structure, concepts, and related metadata.
         
@@ -99,7 +112,6 @@ paths:
       parameters:
         - $ref: "#/components/parameters/variableID-path"
         - $ref: "#/components/parameters/agencyID"
-        - $ref: "#/components/parameters/resourceID"
         - $ref: "#/components/parameters/version"
         - $ref: "#/components/parameters/references"
       responses:
@@ -143,13 +155,12 @@ paths:
         
         The conceptID can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}")
-        - An ID (if agencyID and version are provided as query parameters)
+        - An ID (requires agencyID and version query parameters)
         
         Returns detailed information about the concept including its definition, labels, and related variables.
       parameters:
         - $ref: "#/components/parameters/conceptID-path"
         - $ref: "#/components/parameters/agencyID"
-        - $ref: "#/components/parameters/resourceID"
         - $ref: "#/components/parameters/version"
         - $ref: "#/components/parameters/references"
       responses:
@@ -192,13 +203,12 @@ paths:
         
         The conceptSchemeID can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}")
-        - An ID (if agencyID and version are provided as query parameters)
+        - An ID (requires agencyID and version query parameters)
         
         Returns detailed information about the concept scheme including its concepts and related metadata.
       parameters:
         - $ref: "#/components/parameters/conceptSchemeID-path"
         - $ref: "#/components/parameters/agencyID"
-        - $ref: "#/components/parameters/resourceID"
         - $ref: "#/components/parameters/version"
         - $ref: "#/components/parameters/references"
       responses:
@@ -241,13 +251,12 @@ paths:
         
         The variableSchemeID can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}")
-        - An ID (if agencyID and version are provided as query parameters)
+        - An ID (requires agencyID and version query parameters)
         
         Returns detailed information about the variable scheme including its variables and related metadata.
       parameters:
         - $ref: "#/components/parameters/variableSchemeID-path"
         - $ref: "#/components/parameters/agencyID"
-        - $ref: "#/components/parameters/resourceID"
         - $ref: "#/components/parameters/version"
         - $ref: "#/components/parameters/references"
       responses:
@@ -290,13 +299,12 @@ paths:
         
         The codeListSchemeID can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}")
-        - An ID (if agencyID and version are provided as query parameters)
+        - An ID (requires agencyID and version query parameters)
         
         Returns detailed information about the code list scheme including its code lists and related metadata.
       parameters:
         - $ref: "#/components/parameters/codeListSchemeID-path"
         - $ref: "#/components/parameters/agencyID"
-        - $ref: "#/components/parameters/resourceID"
         - $ref: "#/components/parameters/version"
         - $ref: "#/components/parameters/references"
       responses:
@@ -340,13 +348,12 @@ paths:
         
         The codeListID can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}")
-        - An ID (if agencyID and version are provided as query parameters)
+        - An ID (requires agencyID and version query parameters)
         
         Returns detailed information about the code list including its codes and related metadata.
       parameters:
         - $ref: "#/components/parameters/codeListID-path"
         - $ref: "#/components/parameters/agencyID"
-        - $ref: "#/components/parameters/resourceID"
         - $ref: "#/components/parameters/version"
         - $ref: "#/components/parameters/references"
       responses:
@@ -389,13 +396,12 @@ paths:
         
         The categorySchemeID can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}")
-        - An ID (if agencyID and version are provided as query parameters)
+        - An ID (requires agencyID and version query parameters)
         
         Returns detailed information about the category scheme including its categories and related metadata.
       parameters:
         - $ref: "#/components/parameters/categorySchemeID-path"
         - $ref: "#/components/parameters/agencyID"
-        - $ref: "#/components/parameters/resourceID"
         - $ref: "#/components/parameters/version"
         - $ref: "#/components/parameters/references"
       responses:
@@ -461,13 +467,12 @@ paths:
         
         The studyUnitID can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}")
-        - An ID (if agencyID and version are provided as query parameters)
+        - An ID (requires agencyID and version query parameters)
         
         Returns detailed information about the study unit including its datasets, variables, and related metadata.
       parameters:
         - $ref: "#/components/parameters/studyUnitID-path"
         - $ref: "#/components/parameters/agencyID"
-        - $ref: "#/components/parameters/resourceID"
         - $ref: "#/components/parameters/version"
         - $ref: "#/components/parameters/references"
       responses:
@@ -512,13 +517,12 @@ paths:
         
         The physicalInstanceID can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}")
-        - An ID (if agencyID and version are provided as query parameters)
+        - An ID (requires agencyID and version query parameters)
         
         Returns detailed information about the physical instance including file format and location.
       parameters:
         - $ref: "#/components/parameters/physicalInstanceID-path"
         - $ref: "#/components/parameters/agencyID"
-        - $ref: "#/components/parameters/resourceID"
         - $ref: "#/components/parameters/version"
         - $ref: "#/components/parameters/references"
       responses:
@@ -564,13 +568,12 @@ paths:
         
         The datasetID can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}")
-        - An ID (if agencyID and version are provided as query parameters)
+        - An ID (requires agencyID and version query parameters)
         
         Returns detailed information about the dataset including its variables and structure.
       parameters:
         - $ref: "#/components/parameters/datasetID-path"
         - $ref: "#/components/parameters/agencyID"
-        - $ref: "#/components/parameters/resourceID"
         - $ref: "#/components/parameters/version"
         - $ref: "#/components/parameters/references"
       responses:
@@ -585,6 +588,9 @@ components:
       name: agencyID
       description: |
         Filter by agency ID. Multiple values are supported.
+
+        When any plain (non-URN) resource identifier appears in the path or in identifier-like query parameters,
+        **agencyID** and **version** must both be supplied on the same request (see **Identifier Resolution** in the API description).
       required: false
       schema:
         type: array
@@ -596,7 +602,10 @@ components:
       in: query
       name: resourceID
       description: |
-        Filter by resource ID. Multiple values are supported.
+        Filter list results by resource ID (not used on single-resource GET paths; the path segment identifies the item).
+        Multiple values are supported.
+
+        Plain ID values require **agencyID** and **version** on the same request.
       required: false
       schema:
         type: array
@@ -609,6 +618,9 @@ components:
       name: version
       description: |
         Filter by version. Multiple values are supported.
+
+        When any plain (non-URN) resource identifier appears in the path or in identifier-like query parameters,
+        **agencyID** and **version** must both be supplied on the same request (see **Identifier Resolution** in the API description).
       required: false
       schema:
         type: array
@@ -624,7 +636,7 @@ components:
         
         Each value can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}"), e.g., "urn:ddi:example.agency:var-001:1.0.0"
-        - An ID (if agencyID and version are provided as query parameters), e.g., "var-001"
+        - An ID (requires agencyID and version query parameters), e.g., "var-001"
       required: false
       schema:
         type: array
@@ -644,7 +656,7 @@ components:
         
         Can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}"), e.g., "urn:ddi:example.agency:var-001:1.0.0"
-        - An ID (if agencyID and version are provided as query parameters), e.g., "var-001"
+        - An ID (requires agencyID and version query parameters), e.g., "var-001"
       required: true
       schema:
         type: string
@@ -660,7 +672,7 @@ components:
         
         Each value can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}"), e.g., "urn:ddi:example.agency:concept-001:1.0.0"
-        - An ID (if agencyID and version are provided as query parameters), e.g., "concept-001"
+        - An ID (requires agencyID and version query parameters), e.g., "concept-001"
       required: false
       schema:
         type: array
@@ -680,7 +692,7 @@ components:
         
         Can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}"), e.g., "urn:ddi:example.agency:concept-001:1.0.0"
-        - An ID (if agencyID and version are provided as query parameters), e.g., "concept-001"
+        - An ID (requires agencyID and version query parameters), e.g., "concept-001"
       required: true
       schema:
         type: string
@@ -696,7 +708,7 @@ components:
         
         Each value can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}"), e.g., "urn:ddi:example.agency:study-001:1.0.0"
-        - An ID (if agencyID and version are provided as query parameters), e.g., "study-001"
+        - An ID (requires agencyID and version query parameters), e.g., "study-001"
       required: false
       schema:
         type: array
@@ -716,7 +728,7 @@ components:
         
         Each value can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}"), e.g., "urn:ddi:example.agency:concept-001:1.0.0"
-        - An ID (if agencyID and version are provided as query parameters), e.g., "concept-001"
+        - An ID (requires agencyID and version query parameters), e.g., "concept-001"
       required: false
       schema:
         type: array
@@ -736,7 +748,7 @@ components:
         
         Each value can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}"), e.g., "urn:ddi:example.agency:conceptscheme-001:1.0.0"
-        - An ID (if agencyID and version are provided as query parameters), e.g., "conceptscheme-001"
+        - An ID (requires agencyID and version query parameters), e.g., "conceptscheme-001"
       required: false
       schema:
         type: array
@@ -756,7 +768,7 @@ components:
         
         Can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}"), e.g., "urn:ddi:example.agency:conceptscheme-001:1.0.0"
-        - An ID (if agencyID and version are provided as query parameters), e.g., "conceptscheme-001"
+        - An ID (requires agencyID and version query parameters), e.g., "conceptscheme-001"
       required: true
       schema:
         type: string
@@ -772,7 +784,7 @@ components:
         
         Each value can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}"), e.g., "urn:ddi:example.agency:variablescheme-001:1.0.0"
-        - An ID (if agencyID and version are provided as query parameters), e.g., "variablescheme-001"
+        - An ID (requires agencyID and version query parameters), e.g., "variablescheme-001"
       required: false
       schema:
         type: array
@@ -792,7 +804,7 @@ components:
         
         Can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}"), e.g., "urn:ddi:example.agency:variablescheme-001:1.0.0"
-        - An ID (if agencyID and version are provided as query parameters), e.g., "variablescheme-001"
+        - An ID (requires agencyID and version query parameters), e.g., "variablescheme-001"
       required: true
       schema:
         type: string
@@ -808,7 +820,7 @@ components:
         
         Each value can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}"), e.g., "urn:ddi:example.agency:codelistscheme-001:1.0.0"
-        - An ID (if agencyID and version are provided as query parameters), e.g., "codelistscheme-001"
+        - An ID (requires agencyID and version query parameters), e.g., "codelistscheme-001"
       required: false
       schema:
         type: array
@@ -828,7 +840,7 @@ components:
         
         Can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}"), e.g., "urn:ddi:example.agency:codelistscheme-001:1.0.0"
-        - An ID (if agencyID and version are provided as query parameters), e.g., "codelistscheme-001"
+        - An ID (requires agencyID and version query parameters), e.g., "codelistscheme-001"
       required: true
       schema:
         type: string
@@ -844,7 +856,7 @@ components:
         
         Each value can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}"), e.g., "urn:ddi:example.agency:codelist-001:1.0.0"
-        - An ID (if agencyID and version are provided as query parameters), e.g., "codelist-001"
+        - An ID (requires agencyID and version query parameters), e.g., "codelist-001"
       required: false
       schema:
         type: array
@@ -864,7 +876,7 @@ components:
         
         Can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}"), e.g., "urn:ddi:example.agency:codelist-001:1.0.0"
-        - An ID (if agencyID and version are provided as query parameters), e.g., "codelist-001"
+        - An ID (requires agencyID and version query parameters), e.g., "codelist-001"
       required: true
       schema:
         type: string
@@ -880,7 +892,7 @@ components:
         
         Each value can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}"), e.g., "urn:ddi:example.agency:categoryscheme-001:1.0.0"
-        - An ID (if agencyID and version are provided as query parameters), e.g., "categoryscheme-001"
+        - An ID (requires agencyID and version query parameters), e.g., "categoryscheme-001"
       required: false
       schema:
         type: array
@@ -900,7 +912,7 @@ components:
         
         Can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}"), e.g., "urn:ddi:example.agency:categoryscheme-001:1.0.0"
-        - An ID (if agencyID and version are provided as query parameters), e.g., "categoryscheme-001"
+        - An ID (requires agencyID and version query parameters), e.g., "categoryscheme-001"
       required: true
       schema:
         type: string
@@ -916,7 +928,7 @@ components:
         
         Each value can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}"), e.g., "urn:ddi:example.agency:categoryscheme-001:1.0.0"
-        - An ID (if agencyID and version are provided as query parameters), e.g., "categoryscheme-001"
+        - An ID (requires agencyID and version query parameters), e.g., "categoryscheme-001"
       required: false
       schema:
         type: array
@@ -1035,7 +1047,7 @@ components:
         
         Each value can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}"), e.g., "urn:ddi:example.agency:study-001:1.0.0"
-        - An ID (if agencyID and version are provided as query parameters), e.g., "study-001"
+        - An ID (requires agencyID and version query parameters), e.g., "study-001"
       required: false
       schema:
         type: array
@@ -1055,7 +1067,7 @@ components:
         
         Can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}"), e.g., "urn:ddi:example.agency:study-001:1.0.0"
-        - An ID (if agencyID and version are provided as query parameters), e.g., "study-001"
+        - An ID (requires agencyID and version query parameters), e.g., "study-001"
       required: true
       schema:
         type: string
@@ -1071,7 +1083,7 @@ components:
         
         Each value can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}"), e.g., "urn:ddi:example.agency:phys-001:1.0.0"
-        - An ID (if agencyID and version are provided as query parameters), e.g., "phys-001"
+        - An ID (requires agencyID and version query parameters), e.g., "phys-001"
       required: false
       schema:
         type: array
@@ -1091,7 +1103,7 @@ components:
         
         Can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}"), e.g., "urn:ddi:example.agency:phys-001:1.0.0"
-        - An ID (if agencyID and version are provided as query parameters), e.g., "phys-001"
+        - An ID (requires agencyID and version query parameters), e.g., "phys-001"
       required: true
       schema:
         type: string
@@ -1107,7 +1119,7 @@ components:
         
         Each value can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}"), e.g., "urn:ddi:example.agency:dataset-001:1.0.0"
-        - An ID (if agencyID and version are provided as query parameters), e.g., "dataset-001"
+        - An ID (requires agencyID and version query parameters), e.g., "dataset-001"
       required: false
       schema:
         type: array
@@ -1127,7 +1139,7 @@ components:
         
         Can be either:
         - A URN (format: "urn:ddi:{agency}:{id}:{version}"), e.g., "urn:ddi:example.agency:dataset-001:1.0.0"
-        - An ID (if agencyID and version are provided as query parameters), e.g., "dataset-001"
+        - An ID (requires agencyID and version query parameters), e.g., "dataset-001"
       required: true
       schema:
         type: string
@@ -1582,7 +1594,8 @@ components:
     "304":
       description: Not modified
     "400":
-      description: Bad request
+      description: |
+        Bad request (e.g. malformed parameters, or plain resource identifiers used without required `agencyID` and `version`).
     "401":
       description: Unauthorized
     "403":
@@ -1590,7 +1603,8 @@ components:
     "404":
       description: Not found
     "406":
-      description: Not acceptable
+      description: |
+        Not acceptable — use `Accept` with `application/vnd.ddi.structure+json;version=3.3` or `application/vnd.ddi.structure+xml;version=3.3` (generic `application/json` / `application/xml` are not supported).
     "413":
       description: Request entity too large
     "414":

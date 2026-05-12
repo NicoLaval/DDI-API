@@ -14,6 +14,23 @@ The mock server serves realistic data examples in both French and English, inclu
 - Category Schemes
 - Categories
 
+### Resource identifiers (URN vs plain ID)
+
+The mock server applies the same rules as the OpenAPI specification:
+
+| Form | Path or filter value | Required query parameters |
+|------|----------------------|---------------------------|
+| **DDI URN** | `urn:ddi:{agency}:{resource-id}:{version}` | None (URN is sufficient). |
+| **Plain ID** | e.g. `var-001`, `concept-001` | **`agencyID`** and **`version`** on the **same** request. |
+
+- **Single-resource URLs** (`GET .../variables/var-001`): use either a **full URN** in the path, or a plain ID **with** `?agencyID=...&version=...`. The `resourceID` query parameter is for **list** endpoints only, not for these paths.
+- **List URLs** with filters that contain **plain** IDs (`variableID`, `conceptReference`, `resourceID`, `studyID`, etc.): you **must** also pass **`agencyID`** and **`version`**.
+- If plain IDs are present but `agencyID` or `version` is missing: **`400 Bad Request`** with an explanatory message.
+- Filters that use **only** URNs (e.g. `urn=urn:ddi:...`) or **only** non-ID filters (`agencyID`, `offset`, …) do not require the plain-ID context.
+- There is **no** endpoint that resolves a bare plain ID without agency/version context (no cross-agency disambiguation).
+
+Mock data for examples below uses `agencyID=example.agency` and `version=1.0.0`.
+
 ### Response Formats
 
 The mock API supports DDI-specific formats only:
@@ -39,6 +56,9 @@ All endpoints from the OpenAPI specification are implemented:
 - `GET /ddi/v1/code-lists`
 - `GET /ddi/v1/code-list-schemes`
 - `GET /ddi/v1/category-schemes`
+- `GET /ddi/v1/study-units`
+- `GET /ddi/v1/physical-instances`
+- `GET /ddi/v1/datasets`
 
 **Single Resource Endpoints**:
 - `GET /ddi/v1/variables/{variableID}`
@@ -48,6 +68,9 @@ All endpoints from the OpenAPI specification are implemented:
 - `GET /ddi/v1/code-lists/{codeListID}`
 - `GET /ddi/v1/code-list-schemes/{codeListSchemeID}`
 - `GET /ddi/v1/category-schemes/{categorySchemeID}`
+- `GET /ddi/v1/study-units/{studyUnitID}`
+- `GET /ddi/v1/physical-instances/{physicalInstanceID}`
+- `GET /ddi/v1/datasets/{datasetID}`
 
 **Search Endpoints**:
 - `GET /ddi/v1/search/labels` - Search resources by label
@@ -70,44 +93,50 @@ The mock server will run on `http://localhost:4010`
 
 **DDI JSON (default):**
 ```bash
+# Query suffix for plain IDs in path (required unless you use a full URN in the path)
+# ?agencyID=example.agency&version=1.0.0
+
 # Get all variables (DDI JSON - default)
 curl http://localhost:4010/ddi/v1/variables
 
 # Explicit DDI JSON request
 curl -H "Accept: application/vnd.ddi.structure+json;version=3.3" http://localhost:4010/ddi/v1/variables
 
-# Get a specific variable (without references - default)
-curl http://localhost:4010/ddi/v1/variables/var-001
+# Get a specific variable by plain ID (agency + version required)
+curl "http://localhost:4010/ddi/v1/variables/var-001?agencyID=example.agency&version=1.0.0"
+
+# Same resource via URN in the path (no agency/version query needed)
+curl "http://localhost:4010/ddi/v1/variables/urn:ddi:example.agency:var-001:1.0.0"
 
 # Get a specific variable with direct references resolved (children level)
-curl http://localhost:4010/ddi/v1/variables/var-001?references=children
+curl "http://localhost:4010/ddi/v1/variables/var-001?agencyID=example.agency&version=1.0.0&references=children"
 
 # Get a specific variable with all references resolved recursively
-curl http://localhost:4010/ddi/v1/variables/var-001?references=all
+curl "http://localhost:4010/ddi/v1/variables/var-001?agencyID=example.agency&version=1.0.0&references=all"
 
 # Get all concepts
 curl http://localhost:4010/ddi/v1/concepts
 
-# Get a specific concept (without references - default)
-curl http://localhost:4010/ddi/v1/concepts/concept-001
+# Get a specific concept (plain ID + agency context)
+curl "http://localhost:4010/ddi/v1/concepts/concept-001?agencyID=example.agency&version=1.0.0"
 
 # Get a specific concept with direct references resolved
-curl http://localhost:4010/ddi/v1/concepts/concept-001?references=children
+curl "http://localhost:4010/ddi/v1/concepts/concept-001?agencyID=example.agency&version=1.0.0&references=children"
 
 # Get a specific concept with all references resolved recursively
-curl http://localhost:4010/ddi/v1/concepts/concept-001?references=all
+curl "http://localhost:4010/ddi/v1/concepts/concept-001?agencyID=example.agency&version=1.0.0&references=all"
 
 # Get all code lists
 curl http://localhost:4010/ddi/v1/code-lists
 
-# Get a specific code list (without references - default)
-curl http://localhost:4010/ddi/v1/code-lists/codelist-001
+# Get a specific code list (plain ID + agency context)
+curl "http://localhost:4010/ddi/v1/code-lists/codelist-001?agencyID=example.agency&version=1.0.0"
 
 # Get a specific code list with direct references resolved
-curl http://localhost:4010/ddi/v1/code-lists/codelist-001?references=children
+curl "http://localhost:4010/ddi/v1/code-lists/codelist-001?agencyID=example.agency&version=1.0.0&references=children"
 
 # Get a specific code list with all references resolved recursively
-curl http://localhost:4010/ddi/v1/code-lists/codelist-001?references=all
+curl "http://localhost:4010/ddi/v1/code-lists/codelist-001?agencyID=example.agency&version=1.0.0&references=all"
 
 # Health check
 curl http://localhost:4010/health
@@ -118,17 +147,17 @@ curl http://localhost:4010/health
 # Get all variables (DDI XML)
 curl -H "Accept: application/vnd.ddi.structure+xml;version=3.3" http://localhost:4010/ddi/v1/variables
 
-# Get a specific variable (DDI XML)
-curl -H "Accept: application/vnd.ddi.structure+xml;version=3.3" http://localhost:4010/ddi/v1/variables/var-001
+# Get a specific variable (DDI XML) — plain ID needs agency + version
+curl -H "Accept: application/vnd.ddi.structure+xml;version=3.3" "http://localhost:4010/ddi/v1/variables/var-001?agencyID=example.agency&version=1.0.0"
 
 # Get variable with references resolved (DDI XML)
-curl -H "Accept: application/vnd.ddi.structure+xml;version=3.3" "http://localhost:4010/ddi/v1/variables/var-001?references=all"
+curl -H "Accept: application/vnd.ddi.structure+xml;version=3.3" "http://localhost:4010/ddi/v1/variables/var-001?agencyID=example.agency&version=1.0.0&references=all"
 
 # Get all concepts (DDI XML)
 curl -H "Accept: application/vnd.ddi.structure+xml;version=3.3" http://localhost:4010/ddi/v1/concepts
 
 # Get a specific concept (DDI XML)
-curl -H "Accept: application/vnd.ddi.structure+xml;version=3.3" http://localhost:4010/ddi/v1/concepts/concept-001
+curl -H "Accept: application/vnd.ddi.structure+xml;version=3.3" "http://localhost:4010/ddi/v1/concepts/concept-001?agencyID=example.agency&version=1.0.0"
 
 # Get code lists (DDI XML)
 curl -H "Accept: application/vnd.ddi.structure+xml;version=3.3" http://localhost:4010/ddi/v1/code-lists
@@ -232,9 +261,9 @@ The `references` query parameter controls how referenced objects are returned. I
 
 - **`references=none` (default)**: Returns only references (URN, id, agencyID, version, typeOfObject)
   ```bash
-  curl http://localhost:4010/ddi/v1/variables/var-001
+  curl "http://localhost:4010/ddi/v1/variables/var-001?agencyID=example.agency&version=1.0.0"
   # or explicitly
-  curl http://localhost:4010/ddi/v1/variables/var-001?references=none
+  curl "http://localhost:4010/ddi/v1/variables/var-001?agencyID=example.agency&version=1.0.0&references=none"
   ```
   Response includes:
   ```json
@@ -251,7 +280,7 @@ The `references` query parameter controls how referenced objects are returned. I
 
 - **`references=children`**: Returns full referenced objects at the root level, but references within those objects remain as references. The property name changes from `xxxReference` to `xxx` when resolved.
   ```bash
-  curl http://localhost:4010/ddi/v1/variables/var-001?references=children
+  curl "http://localhost:4010/ddi/v1/variables/var-001?agencyID=example.agency&version=1.0.0&references=children"
   ```
   Response includes:
   ```json
@@ -271,7 +300,7 @@ The `references` query parameter controls how referenced objects are returned. I
 
 - **`references=all`**: Returns full referenced objects recursively, including all nested references. The property name changes from `xxxReference` to `xxx` when resolved.
   ```bash
-  curl http://localhost:4010/ddi/v1/variables/var-001?references=all
+  curl "http://localhost:4010/ddi/v1/variables/var-001?agencyID=example.agency&version=1.0.0&references=all"
   ```
   Response includes:
   ```json
@@ -295,13 +324,13 @@ Variables can have a representation that references a code list. Here's how to r
 
 ```bash
 # Get variable with code list reference (without resolving - default)
-curl http://localhost:4010/ddi/v1/variables/var-002
+curl "http://localhost:4010/ddi/v1/variables/var-002?agencyID=example.agency&version=1.0.0"
 
 # Get variable with code list reference resolved (children level)
-curl http://localhost:4010/ddi/v1/variables/var-002?references=children
+curl "http://localhost:4010/ddi/v1/variables/var-002?agencyID=example.agency&version=1.0.0&references=children"
 
 # Get variable with code list and all nested references resolved (all level)
-curl http://localhost:4010/ddi/v1/variables/var-002?references=all
+curl "http://localhost:4010/ddi/v1/variables/var-002?agencyID=example.agency&version=1.0.0&references=all"
 ```
 
 **With `references=none` (default):**
@@ -393,13 +422,13 @@ Code lists can have nested references that are resolved at different levels:
 
 ```bash
 # Get code list without references (default)
-curl http://localhost:4010/ddi/v1/code-lists/codelist-001
+curl "http://localhost:4010/ddi/v1/code-lists/codelist-001?agencyID=example.agency&version=1.0.0"
 
 # Get code list with direct references resolved (children level)
-curl http://localhost:4010/ddi/v1/code-lists/codelist-001?references=children
+curl "http://localhost:4010/ddi/v1/code-lists/codelist-001?agencyID=example.agency&version=1.0.0&references=children"
 
 # Get code list with all references resolved recursively
-curl http://localhost:4010/ddi/v1/code-lists/codelist-001?references=all
+curl "http://localhost:4010/ddi/v1/code-lists/codelist-001?agencyID=example.agency&version=1.0.0&references=all"
 ```
 
 **With `references=children`:**
@@ -418,13 +447,13 @@ Schemes (ConceptScheme, VariableScheme, CodeListScheme, CategoryScheme) contain 
 
 ```bash
 # Get concept scheme without resolving children (default)
-curl http://localhost:4010/ddi/v1/concept-schemes/conceptscheme-001
+curl "http://localhost:4010/ddi/v1/concept-schemes/conceptscheme-001?agencyID=example.agency&version=1.0.0"
 
 # Get concept scheme with children resolved as full objects (children level)
-curl http://localhost:4010/ddi/v1/concept-schemes/conceptscheme-001?references=children
+curl "http://localhost:4010/ddi/v1/concept-schemes/conceptscheme-001?agencyID=example.agency&version=1.0.0&references=children"
 
 # Get concept scheme with children and all nested references resolved (all level)
-curl http://localhost:4010/ddi/v1/concept-schemes/conceptscheme-001?references=all
+curl "http://localhost:4010/ddi/v1/concept-schemes/conceptscheme-001?agencyID=example.agency&version=1.0.0&references=all"
 ```
 
 **With `references=none` (default):**
@@ -512,11 +541,11 @@ curl "http://localhost:4010/ddi/v1/variables?agencyID=example.agency&agencyID=ot
 ### Filter by Resource ID
 
 ```bash
-# Get specific variables by ID
-curl "http://localhost:4010/ddi/v1/variables?resourceID=var-001"
+# Get specific variables by ID (plain IDs need agency + version on the same request)
+curl "http://localhost:4010/ddi/v1/variables?resourceID=var-001&agencyID=example.agency&version=1.0.0"
 
 # Get multiple variables
-curl "http://localhost:4010/ddi/v1/variables?resourceID=var-001&resourceID=var-002"
+curl "http://localhost:4010/ddi/v1/variables?resourceID=var-001&resourceID=var-002&agencyID=example.agency&version=1.0.0"
 ```
 
 ### Filter by Version
@@ -539,10 +568,10 @@ curl "http://localhost:4010/ddi/v1/variables?urn=urn:ddi:example.agency:var-001:
 ### Filter Variables by Concept Reference
 
 ```bash
-# Get variables that reference a specific concept
-curl "http://localhost:4010/ddi/v1/variables?conceptReference=concept-001"
+# Get variables that reference a specific concept (plain concept ID needs agency + version)
+curl "http://localhost:4010/ddi/v1/variables?conceptReference=concept-001&agencyID=example.agency&version=1.0.0"
 
-# Or by URN
+# Or by URN (no extra agency/version needed)
 curl "http://localhost:4010/ddi/v1/variables?conceptReference=urn:ddi:example.agency:concept-001:1.0.0"
 ```
 
@@ -566,7 +595,7 @@ curl "http://localhost:4010/ddi/v1/variables?offset=5"
 curl "http://localhost:4010/ddi/v1/variables?agencyID=example.agency&version=1.0.0&limit=5"
 
 # Filter by concept and resolve direct references
-curl "http://localhost:4010/ddi/v1/variables?conceptReference=concept-001&references=children"
+curl "http://localhost:4010/ddi/v1/variables?conceptReference=concept-001&agencyID=example.agency&version=1.0.0&references=children"
 
 # Filter, paginate, and resolve all references recursively
 curl "http://localhost:4010/ddi/v1/variables?agencyID=example.agency&offset=0&limit=10&references=all"
@@ -579,7 +608,7 @@ curl "http://localhost:4010/ddi/v1/variables?agencyID=example.agency&offset=0&li
 curl "http://localhost:4010/ddi/v1/code-lists?agencyID=example.agency"
 
 # Get specific code list by ID
-curl "http://localhost:4010/ddi/v1/code-lists?resourceID=codelist-001"
+curl "http://localhost:4010/ddi/v1/code-lists?resourceID=codelist-001&agencyID=example.agency&version=1.0.0"
 
 # Get code lists with pagination
 curl "http://localhost:4010/ddi/v1/code-lists?offset=0&limit=5"
@@ -592,7 +621,7 @@ curl "http://localhost:4010/ddi/v1/code-lists?offset=0&limit=5"
 curl "http://localhost:4010/ddi/v1/concepts?agencyID=example.agency"
 
 # Get specific concepts by ID
-curl "http://localhost:4010/ddi/v1/concepts?conceptID=concept-001&conceptID=concept-002"
+curl "http://localhost:4010/ddi/v1/concepts?conceptID=concept-001&conceptID=concept-002&agencyID=example.agency&version=1.0.0"
 
 # Get concepts with resolved references (children level)
 curl "http://localhost:4010/ddi/v1/concepts?agencyID=example.agency&references=children"
