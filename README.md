@@ -14,6 +14,18 @@ This API provides access to DDI metadata resources.
 
 For detailed API usage, endpoints, and examples, see the [Mock API Endpoints Documentation](docs/MOCK_API_ENDPOINTS.md).
 
+### Resource identifiers
+
+Identifiers follow an **URN-first** rule (see `ddi-rest.yaml`):
+
+- **DDI URN** (`urn:ddi:{agency}:{id}:{version}`): identifies a resource unambiguously; no extra query parameters are required.
+- **Plain ID**: meaningful only within a DDI agency; **`agencyID`** and **`version`** query parameters are **required** on the same request (path or list filters).
+- There is **no** global lookup by plain ID alone across agencies or versions.
+
+If a plain ID is used without both `agencyID` and `version`, the API responds with **`400 Bad Request`**.
+
+Examples in the [mock endpoints guide](docs/MOCK_API_ENDPOINTS.md) use `agencyID=example.agency` and `version=1.0.0` for plain identifiers.
+
 ## OpenAPI Specification
 
 The API specification is available in the `ddi-rest.yaml` file in OpenAPI 3.1.1 format.

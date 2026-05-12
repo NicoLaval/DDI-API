@@ -2,10 +2,8 @@
 
 /**
  * DDI API Mock Server
- * 
- * Serves mock data for the DDI REST API.
- * Uses Prism for dynamic mock generation from OpenAPI spec,
- * with fallback to static JSON files for specific examples.
+ *
+ * Serves mock data from static JSON files under mocks/data/, aligned with ddi-rest.yaml.
  */
 
 const express = require('express');
@@ -31,14 +29,160 @@ function loadMock(fileName) {
   return null;
 }
 
-// Helper to find item by ID or URN
-function findById(data, id) {
-  if (!data || !Array.isArray(data)) return null;
-  return data.find(item => 
-    item.id === id || 
-    item.urn === id ||
-    item.urn === `urn:ddi:example.agency:${id}:1.0.0`
+/** True if value is a DDI URN (namespace-specific string starts after urn:ddi:) */
+function isDdiUrn(s) {
+  if (!s || typeof s !== 'string') return false;
+  return /^urn:ddi:/i.test(s.trim());
+}
+
+/**
+ * Parse NSS of urn:ddi:<agency>:<resource>:<version>
+ * Agency segment may contain dots; resource/version per RFC 9517 restricted strings (no extra colons in mock data).
+ */
+function parseDdiUrn(urn) {
+  const parts = String(urn).trim().split(':');
+  if (parts.length < 5) return null;
+  if (parts[0].toLowerCase() !== 'urn' || parts[1].toLowerCase() !== 'ddi') return null;
+  const agency = parts[2];
+  const resource = parts[3];
+  const version = parts.slice(4).join(':');
+  return { agency, resource, version };
+}
+
+/** Lexical match for DDI URNs (agency compared case-insensitively per RFC 9517). */
+function urnsEqual(a, b) {
+  if (!a || !b) return false;
+  const pa = parseDdiUrn(a);
+  const pb = parseDdiUrn(b);
+  if (pa && pb) {
+    return (
+      pa.agency.toLowerCase() === pb.agency.toLowerCase() &&
+      pa.resource === pb.resource &&
+      pa.version === pb.version
+    );
+  }
+  return String(a) === String(b);
+}
+
+/** Query params whose values can be plain IDs requiring agencyID + version (see OpenAPI). */
+const QUERY_PARAM_KEYS_WITH_RESOURCE_IDS = [
+  'variableID',
+  'conceptID',
+  'resourceID',
+  'id',
+  'conceptReference',
+  'studyID',
+  'datasetID',
+  'conceptSchemeID',
+  'variableSchemeID',
+  'codeListSchemeID',
+  'codeListID',
+  'categorySchemeID',
+  'categorySchemeReference',
+  'studyUnitID',
+  'physicalInstanceID'
+];
+
+function validatePlainIdentifierParams(query) {
+  let hasPlain = false;
+  for (const key of QUERY_PARAM_KEYS_WITH_RESOURCE_IDS) {
+    if (!query[key]) continue;
+    for (const token of parseMultiValue(query[key])) {
+      if (token && !isDdiUrn(token)) {
+        hasPlain = true;
+        break;
+      }
+    }
+    if (hasPlain) break;
+  }
+  if (!hasPlain) return { ok: true };
+  const agencies = parseMultiValue(query.agencyID);
+  const versions = parseMultiValue(query.version);
+  if (agencies.length === 0 || versions.length === 0) {
+    return {
+      ok: false,
+      message:
+        'Plain resource identifiers require agencyID and version query parameters.'
+    };
+  }
+  return { ok: true };
+}
+
+/** Match a stored resource item against a path/query token (URN or scoped plain id). */
+function matchesIdentifierToken(item, token, query) {
+  if (!item || token === undefined || token === null) return false;
+  const t = String(token).trim();
+  if (!t) return false;
+  if (isDdiUrn(t)) return urnsEqual(item.urn, t);
+  const agencies = parseMultiValue(query.agencyID);
+  const versions = parseMultiValue(query.version);
+  if (agencies.length === 0 || versions.length === 0) return false;
+  return (
+    item.id === t &&
+    String(item.agencyID).toLowerCase() === agencies[0].toLowerCase() &&
+    item.version === versions[0]
   );
+}
+
+/** Match a DDI reference object against a token (URN or plain id + query agency/version). */
+function referenceMatchesToken(ref, token, query) {
+  if (!ref) return false;
+  const t = String(token).trim();
+  if (!t) return false;
+  if (isDdiUrn(t)) return urnsEqual(ref.urn, t);
+  const agencies = parseMultiValue(query.agencyID);
+  const versions = parseMultiValue(query.version);
+  if (agencies.length === 0 || versions.length === 0) return false;
+  return (
+    ref.id === t &&
+    String(ref.agencyID).toLowerCase() === agencies[0].toLowerCase() &&
+    ref.version === versions[0]
+  );
+}
+
+/**
+ * Resolve a single resource by path segment: URN anywhere, or plain id with agencyID + version query.
+ * @returns {{ item: object|null, error: null|'badrequest'|'notfound', message?: string }}
+ */
+function findResourceForRequest(data, pathIdentifier, query) {
+  if (!data || !Array.isArray(data)) return { item: null, error: 'notfound' };
+  const pid = String(pathIdentifier || '').trim();
+  if (!pid) return { item: null, error: 'notfound' };
+
+  if (isDdiUrn(pid)) {
+    const item = data.find(it => urnsEqual(it.urn, pid));
+    return { item: item || null, error: item ? null : 'notfound' };
+  }
+
+  const agencies = parseMultiValue(query.agencyID);
+  const versions = parseMultiValue(query.version);
+  if (agencies.length === 0 || versions.length === 0) {
+    return {
+      item: null,
+      error: 'badrequest',
+      message:
+        'Plain resource ID requires agencyID and version query parameters.'
+    };
+  }
+
+  const item = data.find(
+    it =>
+      it.id === pid &&
+      String(it.agencyID).toLowerCase() === agencies[0].toLowerCase() &&
+      it.version === versions[0]
+  );
+  return { item: item || null, error: item ? null : 'notfound' };
+}
+
+// Helper to find item by ID or URN (internal resolution; mock ids are unique per file)
+function findById(data, idOrUrn) {
+  if (!data || !Array.isArray(data)) return null;
+  const key = String(idOrUrn || '').trim();
+  if (!key) return null;
+  if (isDdiUrn(key)) {
+    return data.find(item => urnsEqual(item.urn, key));
+  }
+  return data.find(item => item.id === key || urnsEqual(item.urn, key));
 }
 
 // Helper to parse query values (supports repeated params and comma-separated values)
@@ -53,73 +197,81 @@ function parseMultiValue(value) {
 
 // Helper to filter data by query parameters
 function filterData(data, query, resourceType = null) {
-  if (!data || !Array.isArray(data)) return data;
-  
+  const validation = validatePlainIdentifierParams(query);
+  if (!validation.ok) {
+    return {
+      ok: false,
+      status: 400,
+      message: validation.message
+    };
+  }
+
+  if (!data || !Array.isArray(data)) return { ok: true, data };
+
   let filtered = [...data];
-  
+
   // Filter by URN
   if (query.urn) {
     const urns = parseMultiValue(query.urn);
-    filtered = filtered.filter(item => urns.includes(item.urn));
+    filtered = filtered.filter(item => urns.some(u => urnsEqual(item.urn, u)));
   }
-  
+
   // Filter by agencyID
   if (query.agencyID) {
     const agencyIDs = parseMultiValue(query.agencyID);
-    filtered = filtered.filter(item => agencyIDs.includes(item.agencyID));
+    filtered = filtered.filter(item =>
+      agencyIDs.some(a => String(item.agencyID).toLowerCase() === String(a).toLowerCase())
+    );
   }
-  
+
   // Filter by resourceID (id)
   if (query.resourceID || query.id) {
     const ids = parseMultiValue(query.resourceID || query.id);
-    filtered = filtered.filter(item => ids.includes(item.id));
+    filtered = filtered.filter(item =>
+      ids.some(token => matchesIdentifierToken(item, token, query))
+    );
   }
-  
+
   // Filter by version
   if (query.version) {
     const versions = parseMultiValue(query.version);
     filtered = filtered.filter(item => versions.includes(item.version));
   }
-  
+
   // Filter by variableID (for variables list)
   if (query.variableID) {
     const ids = parseMultiValue(query.variableID);
-    filtered = filtered.filter(item => {
-      const itemId = item.id || extractId({ id: item.id, urn: item.urn });
-      return ids.some(id => itemId === id || itemId === extractId({ id, urn: id }));
-    });
+    filtered = filtered.filter(item =>
+      ids.some(token => matchesIdentifierToken(item, token, query))
+    );
   }
-  
+
   // Filter by conceptID (for concepts list)
   if (query.conceptID) {
     const ids = parseMultiValue(query.conceptID);
-    filtered = filtered.filter(item => {
-      const itemId = item.id || extractId({ id: item.id, urn: item.urn });
-      return ids.some(id => itemId === id || itemId === extractId({ id, urn: id }));
-    });
+    filtered = filtered.filter(item =>
+      ids.some(token => matchesIdentifierToken(item, token, query))
+    );
   }
-  
+
   // Filter by conceptReference (for variables)
   if (query.conceptReference) {
     const refs = parseMultiValue(query.conceptReference);
-    filtered = filtered.filter(item => {
-      if (!item.conceptReference) return false;
-      const itemRefId = extractId(item.conceptReference);
-      return refs.some(ref => {
-        const refId = extractId({ id: ref, urn: ref });
-        return itemRefId === refId;
-      });
-    });
+    filtered = filtered.filter(item =>
+      refs.some(token => referenceMatchesToken(item.conceptReference, token, query))
+    );
   }
 
   // Filter concepts by conceptSchemeID
   if (resourceType === 'concepts' && query.conceptSchemeID) {
-    const schemeIds = parseMultiValue(query.conceptSchemeID).map(id => extractId({ id, urn: id }) || id);
+    const schemeTokens = parseMultiValue(query.conceptSchemeID);
     const schemes = loadMock('concept-schemes.json') || [];
     const allowedConceptIds = new Set();
 
     schemes
-      .filter(scheme => schemeIds.includes(scheme.id) || schemeIds.includes(extractId(scheme)))
+      .filter(scheme =>
+        schemeTokens.some(t => matchesIdentifierToken(scheme, t, query))
+      )
       .forEach(scheme => {
         (scheme.concepts || []).forEach(conceptRef => {
           const conceptId = extractId(conceptRef);
@@ -132,7 +284,7 @@ function filterData(data, query, resourceType = null) {
 
   // Filter variables by studyID (via study-unit -> dataset -> variable scheme)
   if (resourceType === 'variables' && query.studyID) {
-    const studyIds = parseMultiValue(query.studyID).map(id => extractId({ id, urn: id }) || id);
+    const studyTokens = parseMultiValue(query.studyID);
     const studies = loadMock('study-units.json') || [];
     const datasets = loadMock('datasets.json') || [];
     const variableSchemeIds = new Set();
@@ -140,7 +292,9 @@ function filterData(data, query, resourceType = null) {
 
     const datasetIdsInStudy = new Set();
     studies
-      .filter(study => studyIds.includes(study.id) || studyIds.includes(extractId(study)))
+      .filter(study =>
+        studyTokens.some(t => matchesIdentifierToken(study, t, query))
+      )
       .forEach(study => {
         (study.dataSetReference || []).forEach(datasetRef => {
           const datasetId = extractId(datasetRef);
@@ -170,13 +324,15 @@ function filterData(data, query, resourceType = null) {
 
   // Filter variables by datasetID (via dataset -> variable scheme)
   if (resourceType === 'variables' && query.datasetID) {
-    const datasetIds = parseMultiValue(query.datasetID).map(id => extractId({ id, urn: id }) || id);
+    const datasetTokens = parseMultiValue(query.datasetID);
     const datasets = loadMock('datasets.json') || [];
     const variableSchemeIds = new Set();
     const allowedVariableIds = new Set();
 
     datasets
-      .filter(dataset => datasetIds.includes(dataset.id) || datasetIds.includes(extractId(dataset)))
+      .filter(dataset =>
+        datasetTokens.some(t => matchesIdentifierToken(dataset, t, query))
+      )
       .forEach(dataset => {
         const variableSchemeId = extractId(dataset.variableSchemeReference);
         if (variableSchemeId) variableSchemeIds.add(variableSchemeId);
@@ -197,12 +353,14 @@ function filterData(data, query, resourceType = null) {
 
   // Filter code lists by codeListSchemeID
   if (resourceType === 'code-lists' && query.codeListSchemeID) {
-    const schemeIds = parseMultiValue(query.codeListSchemeID).map(id => extractId({ id, urn: id }) || id);
+    const schemeTokens = parseMultiValue(query.codeListSchemeID);
     const schemes = loadMock('code-list-schemes.json') || [];
     const allowedCodeListIds = new Set();
 
     schemes
-      .filter(scheme => schemeIds.includes(scheme.id) || schemeIds.includes(extractId(scheme)))
+      .filter(scheme =>
+        schemeTokens.some(t => matchesIdentifierToken(scheme, t, query))
+      )
       .forEach(scheme => {
         (scheme.codeLists || []).forEach(codeListRef => {
           const codeListId = extractId(codeListRef);
@@ -215,12 +373,14 @@ function filterData(data, query, resourceType = null) {
 
   // Filter code lists by categorySchemeReference (categories referenced by codes)
   if (resourceType === 'code-lists' && query.categorySchemeReference) {
-    const schemeIds = parseMultiValue(query.categorySchemeReference).map(id => extractId({ id, urn: id }) || id);
+    const schemeTokens = parseMultiValue(query.categorySchemeReference);
     const categorySchemes = loadMock('category-schemes.json') || [];
     const allowedCategoryIds = new Set();
 
     categorySchemes
-      .filter(scheme => schemeIds.includes(scheme.id) || schemeIds.includes(extractId(scheme)))
+      .filter(scheme =>
+        schemeTokens.some(t => matchesIdentifierToken(scheme, t, query))
+      )
       .forEach(scheme => {
         (scheme.categories || []).forEach(categoryRef => {
           const categoryId = extractId(categoryRef);
@@ -239,30 +399,34 @@ function filterData(data, query, resourceType = null) {
 
   // Filter physical instances by datasetID
   if (resourceType === 'physical-instances' && query.datasetID) {
-    const datasetIds = parseMultiValue(query.datasetID).map(id => extractId({ id, urn: id }) || id);
-    filtered = filtered.filter(item => {
-      const refId = extractId(item.dataSetReference);
-      return refId && datasetIds.includes(refId);
-    });
+    const datasetTokens = parseMultiValue(query.datasetID);
+    filtered = filtered.filter(item =>
+      datasetTokens.some(t =>
+        referenceMatchesToken(item.dataSetReference, t, query)
+      )
+    );
   }
 
   // Filter datasets by physicalInstanceID
   if (resourceType === 'datasets' && query.physicalInstanceID) {
-    const physicalIds = parseMultiValue(query.physicalInstanceID).map(id => extractId({ id, urn: id }) || id);
-    filtered = filtered.filter(item => {
-      const refId = extractId(item.physicalInstanceReference);
-      return refId && physicalIds.includes(refId);
-    });
+    const physicalTokens = parseMultiValue(query.physicalInstanceID);
+    filtered = filtered.filter(item =>
+      physicalTokens.some(t =>
+        referenceMatchesToken(item.physicalInstanceReference, t, query)
+      )
+    );
   }
 
   // Filter datasets by studyID
   if (resourceType === 'datasets' && query.studyID) {
-    const studyIds = parseMultiValue(query.studyID).map(id => extractId({ id, urn: id }) || id);
+    const studyTokens = parseMultiValue(query.studyID);
     const studies = loadMock('study-units.json') || [];
     const allowedDatasetIds = new Set();
 
     studies
-      .filter(study => studyIds.includes(study.id) || studyIds.includes(extractId(study)))
+      .filter(study =>
+        studyTokens.some(t => matchesIdentifierToken(study, t, query))
+      )
       .forEach(study => {
         (study.dataSetReference || []).forEach(datasetRef => {
           const datasetId = extractId(datasetRef);
@@ -282,8 +446,8 @@ function filterData(data, query, resourceType = null) {
   } else if (offset > 0) {
     filtered = filtered.slice(offset);
   }
-  
-  return filtered;
+
+  return { ok: true, data: filtered };
 }
 
 // Helper to extract ID from URN or use direct ID
@@ -634,8 +798,15 @@ app.get('/ddi/v1/variables', (req, res) => {
   let data = loadMock('variables.json');
   
   // Apply filters
-  data = filterData(data, req.query, 'variables');
-  
+  const fdVariables = filterData(data, req.query, 'variables');
+  if (!fdVariables.ok) {
+    return res.status(fdVariables.status).json({
+      error: 'Bad Request',
+      message: fdVariables.message
+    });
+  }
+  data = fdVariables.data;
+
   // Resolve references if requested
   if (data && references !== 'none') {
     const resolved = data.map(item => resolveReferences(item, references));
@@ -649,13 +820,18 @@ app.get('/ddi/v1/variables/:variableID', (req, res) => {
   const { variableID } = req.params;
   const references = req.query.references || 'none';
   const data = loadMock('variables.json');
-  const variable = findById(data, variableID);
-  if (variable) {
-    const resolved = resolveReferences(variable, references);
-    sendResponse(req, res, resolved, 'variable');
-  } else {
-    res.status(404).json({ error: 'Variable not found' });
+  const result = findResourceForRequest(data, variableID, req.query);
+  if (result.error === 'badrequest') {
+    return res.status(400).json({
+      error: 'Bad Request',
+      message: result.message
+    });
   }
+  if (!result.item) {
+    return res.status(404).json({ error: 'Variable not found' });
+  }
+  const resolved = resolveReferences(result.item, references);
+  sendResponse(req, res, resolved, 'variable');
 });
 
 // Concepts endpoints
@@ -664,8 +840,15 @@ app.get('/ddi/v1/concepts', (req, res) => {
   let data = loadMock('concepts.json');
   
   // Apply filters
-  data = filterData(data, req.query, 'concepts');
-  
+  const fdConcepts = filterData(data, req.query, 'concepts');
+  if (!fdConcepts.ok) {
+    return res.status(fdConcepts.status).json({
+      error: 'Bad Request',
+      message: fdConcepts.message
+    });
+  }
+  data = fdConcepts.data;
+
   // Resolve references if requested
   if (data && references !== 'none') {
     const resolved = data.map(item => resolveReferences(item, references));
@@ -679,13 +862,18 @@ app.get('/ddi/v1/concepts/:conceptID', (req, res) => {
   const { conceptID } = req.params;
   const references = req.query.references || 'none';
   const data = loadMock('concepts.json');
-  const concept = findById(data, conceptID);
-  if (concept) {
-    const resolved = resolveReferences(concept, references);
-    sendResponse(req, res, resolved, 'concept');
-  } else {
-    res.status(404).json({ error: 'Concept not found' });
+  const result = findResourceForRequest(data, conceptID, req.query);
+  if (result.error === 'badrequest') {
+    return res.status(400).json({
+      error: 'Bad Request',
+      message: result.message
+    });
   }
+  if (!result.item) {
+    return res.status(404).json({ error: 'Concept not found' });
+  }
+  const resolved = resolveReferences(result.item, references);
+  sendResponse(req, res, resolved, 'concept');
 });
 
 // Concept Schemes endpoints
@@ -694,8 +882,15 @@ app.get('/ddi/v1/concept-schemes', (req, res) => {
   let data = loadMock('concept-schemes.json');
   
   // Apply filters
-  data = filterData(data, req.query);
-  
+  const fdConceptSchemes = filterData(data, req.query);
+  if (!fdConceptSchemes.ok) {
+    return res.status(fdConceptSchemes.status).json({
+      error: 'Bad Request',
+      message: fdConceptSchemes.message
+    });
+  }
+  data = fdConceptSchemes.data;
+
   // Resolve references if requested
   if (data && references !== 'none') {
     const resolved = data.map(item => resolveReferences(item, references));
@@ -709,13 +904,18 @@ app.get('/ddi/v1/concept-schemes/:conceptSchemeID', (req, res) => {
   const { conceptSchemeID } = req.params;
   const references = req.query.references || 'none';
   const data = loadMock('concept-schemes.json');
-  const scheme = findById(data, conceptSchemeID);
-  if (scheme) {
-    const resolved = resolveReferences(scheme, references);
-    sendResponse(req, res, resolved, 'conceptScheme');
-  } else {
-    res.status(404).json({ error: 'Concept scheme not found' });
+  const result = findResourceForRequest(data, conceptSchemeID, req.query);
+  if (result.error === 'badrequest') {
+    return res.status(400).json({
+      error: 'Bad Request',
+      message: result.message
+    });
   }
+  if (!result.item) {
+    return res.status(404).json({ error: 'Concept scheme not found' });
+  }
+  const resolved = resolveReferences(result.item, references);
+  sendResponse(req, res, resolved, 'conceptScheme');
 });
 
 // Variable Schemes endpoints
@@ -724,8 +924,15 @@ app.get('/ddi/v1/variable-schemes', (req, res) => {
   let data = loadMock('variable-schemes.json');
   
   // Apply filters
-  data = filterData(data, req.query);
-  
+  const fdVarSchemes = filterData(data, req.query);
+  if (!fdVarSchemes.ok) {
+    return res.status(fdVarSchemes.status).json({
+      error: 'Bad Request',
+      message: fdVarSchemes.message
+    });
+  }
+  data = fdVarSchemes.data;
+
   // Resolve references if requested
   if (data && references !== 'none') {
     const resolved = data.map(item => resolveReferences(item, references));
@@ -739,13 +946,18 @@ app.get('/ddi/v1/variable-schemes/:variableSchemeID', (req, res) => {
   const { variableSchemeID } = req.params;
   const references = req.query.references || 'none';
   const data = loadMock('variable-schemes.json');
-  const scheme = findById(data, variableSchemeID);
-  if (scheme) {
-    const resolved = resolveReferences(scheme, references);
-    sendResponse(req, res, resolved, 'variableScheme');
-  } else {
-    res.status(404).json({ error: 'Variable scheme not found' });
+  const result = findResourceForRequest(data, variableSchemeID, req.query);
+  if (result.error === 'badrequest') {
+    return res.status(400).json({
+      error: 'Bad Request',
+      message: result.message
+    });
   }
+  if (!result.item) {
+    return res.status(404).json({ error: 'Variable scheme not found' });
+  }
+  const resolved = resolveReferences(result.item, references);
+  sendResponse(req, res, resolved, 'variableScheme');
 });
 
 // Code Lists endpoints
@@ -754,8 +966,15 @@ app.get('/ddi/v1/code-lists', (req, res) => {
   let data = loadMock('code-lists.json');
   
   // Apply filters
-  data = filterData(data, req.query, 'code-lists');
-  
+  const fdCodeLists = filterData(data, req.query, 'code-lists');
+  if (!fdCodeLists.ok) {
+    return res.status(fdCodeLists.status).json({
+      error: 'Bad Request',
+      message: fdCodeLists.message
+    });
+  }
+  data = fdCodeLists.data;
+
   // Resolve references if requested
   if (data && references !== 'none') {
     const resolved = data.map(item => resolveReferences(item, references));
@@ -769,13 +988,18 @@ app.get('/ddi/v1/code-lists/:codeListID', (req, res) => {
   const { codeListID } = req.params;
   const references = req.query.references || 'none';
   const data = loadMock('code-lists.json');
-  const codeList = findById(data, codeListID);
-  if (codeList) {
-    const resolved = resolveReferences(codeList, references);
-    sendResponse(req, res, resolved, 'codeList');
-  } else {
-    res.status(404).json({ error: 'Code list not found' });
+  const result = findResourceForRequest(data, codeListID, req.query);
+  if (result.error === 'badrequest') {
+    return res.status(400).json({
+      error: 'Bad Request',
+      message: result.message
+    });
   }
+  if (!result.item) {
+    return res.status(404).json({ error: 'Code list not found' });
+  }
+  const resolved = resolveReferences(result.item, references);
+  sendResponse(req, res, resolved, 'codeList');
 });
 
 // Code List Schemes endpoints
@@ -784,8 +1008,15 @@ app.get('/ddi/v1/code-list-schemes', (req, res) => {
   let data = loadMock('code-list-schemes.json');
   
   // Apply filters
-  data = filterData(data, req.query);
-  
+  const fdCls = filterData(data, req.query);
+  if (!fdCls.ok) {
+    return res.status(fdCls.status).json({
+      error: 'Bad Request',
+      message: fdCls.message
+    });
+  }
+  data = fdCls.data;
+
   // Resolve references if requested
   if (data && references !== 'none') {
     const resolved = data.map(item => resolveReferences(item, references));
@@ -799,13 +1030,18 @@ app.get('/ddi/v1/code-list-schemes/:codeListSchemeID', (req, res) => {
   const { codeListSchemeID } = req.params;
   const references = req.query.references || 'none';
   const data = loadMock('code-list-schemes.json');
-  const scheme = findById(data, codeListSchemeID);
-  if (scheme) {
-    const resolved = resolveReferences(scheme, references);
-    sendResponse(req, res, resolved, 'codeListScheme');
-  } else {
-    res.status(404).json({ error: 'Code list scheme not found' });
+  const result = findResourceForRequest(data, codeListSchemeID, req.query);
+  if (result.error === 'badrequest') {
+    return res.status(400).json({
+      error: 'Bad Request',
+      message: result.message
+    });
   }
+  if (!result.item) {
+    return res.status(404).json({ error: 'Code list scheme not found' });
+  }
+  const resolved = resolveReferences(result.item, references);
+  sendResponse(req, res, resolved, 'codeListScheme');
 });
 
 // Category Schemes endpoints
@@ -814,8 +1050,15 @@ app.get('/ddi/v1/category-schemes', (req, res) => {
   let data = loadMock('category-schemes.json');
   
   // Apply filters
-  data = filterData(data, req.query);
-  
+  const fdCatSchemes = filterData(data, req.query);
+  if (!fdCatSchemes.ok) {
+    return res.status(fdCatSchemes.status).json({
+      error: 'Bad Request',
+      message: fdCatSchemes.message
+    });
+  }
+  data = fdCatSchemes.data;
+
   // Resolve references if requested
   if (data && references !== 'none') {
     const resolved = data.map(item => resolveReferences(item, references));
@@ -829,13 +1072,18 @@ app.get('/ddi/v1/category-schemes/:categorySchemeID', (req, res) => {
   const { categorySchemeID } = req.params;
   const references = req.query.references || 'none';
   const data = loadMock('category-schemes.json');
-  const scheme = findById(data, categorySchemeID);
-  if (scheme) {
-    const resolved = resolveReferences(scheme, references);
-    sendResponse(req, res, resolved, 'categoryScheme');
-  } else {
-    res.status(404).json({ error: 'Category scheme not found' });
+  const result = findResourceForRequest(data, categorySchemeID, req.query);
+  if (result.error === 'badrequest') {
+    return res.status(400).json({
+      error: 'Bad Request',
+      message: result.message
+    });
   }
+  if (!result.item) {
+    return res.status(404).json({ error: 'Category scheme not found' });
+  }
+  const resolved = resolveReferences(result.item, references);
+  sendResponse(req, res, resolved, 'categoryScheme');
 });
 
 // Study Units endpoints
@@ -844,8 +1092,15 @@ app.get('/ddi/v1/study-units', (req, res) => {
   let data = loadMock('study-units.json');
   
   // Apply filters
-  data = filterData(data, req.query);
-  
+  const fdStudyUnits = filterData(data, req.query);
+  if (!fdStudyUnits.ok) {
+    return res.status(fdStudyUnits.status).json({
+      error: 'Bad Request',
+      message: fdStudyUnits.message
+    });
+  }
+  data = fdStudyUnits.data;
+
   // Resolve references if requested
   if (data && references !== 'none') {
     const resolved = data.map(item => resolveReferences(item, references));
@@ -859,13 +1114,18 @@ app.get('/ddi/v1/study-units/:studyUnitID', (req, res) => {
   const { studyUnitID } = req.params;
   const references = req.query.references || 'none';
   const data = loadMock('study-units.json');
-  const studyUnit = findById(data, studyUnitID);
-  if (studyUnit) {
-    const resolved = resolveReferences(studyUnit, references);
-    sendResponse(req, res, resolved, 'studyUnit');
-  } else {
-    res.status(404).json({ error: 'Study unit not found' });
+  const result = findResourceForRequest(data, studyUnitID, req.query);
+  if (result.error === 'badrequest') {
+    return res.status(400).json({
+      error: 'Bad Request',
+      message: result.message
+    });
   }
+  if (!result.item) {
+    return res.status(404).json({ error: 'Study unit not found' });
+  }
+  const resolved = resolveReferences(result.item, references);
+  sendResponse(req, res, resolved, 'studyUnit');
 });
 
 // Physical Instances endpoints
@@ -874,8 +1134,15 @@ app.get('/ddi/v1/physical-instances', (req, res) => {
   let data = loadMock('physical-instances.json');
   
   // Apply filters
-  data = filterData(data, req.query, 'physical-instances');
-  
+  const fdPhys = filterData(data, req.query, 'physical-instances');
+  if (!fdPhys.ok) {
+    return res.status(fdPhys.status).json({
+      error: 'Bad Request',
+      message: fdPhys.message
+    });
+  }
+  data = fdPhys.data;
+
   // Resolve references if requested
   if (data && references !== 'none') {
     const resolved = data.map(item => resolveReferences(item, references));
@@ -889,13 +1156,18 @@ app.get('/ddi/v1/physical-instances/:physicalInstanceID', (req, res) => {
   const { physicalInstanceID } = req.params;
   const references = req.query.references || 'none';
   const data = loadMock('physical-instances.json');
-  const physicalInstance = findById(data, physicalInstanceID);
-  if (physicalInstance) {
-    const resolved = resolveReferences(physicalInstance, references);
-    sendResponse(req, res, resolved, 'physicalInstance');
-  } else {
-    res.status(404).json({ error: 'Physical instance not found' });
+  const result = findResourceForRequest(data, physicalInstanceID, req.query);
+  if (result.error === 'badrequest') {
+    return res.status(400).json({
+      error: 'Bad Request',
+      message: result.message
+    });
   }
+  if (!result.item) {
+    return res.status(404).json({ error: 'Physical instance not found' });
+  }
+  const resolved = resolveReferences(result.item, references);
+  sendResponse(req, res, resolved, 'physicalInstance');
 });
 
 // Datasets endpoints
@@ -904,8 +1176,15 @@ app.get('/ddi/v1/datasets', (req, res) => {
   let data = loadMock('datasets.json');
   
   // Apply filters
-  data = filterData(data, req.query, 'datasets');
-  
+  const fdDatasets = filterData(data, req.query, 'datasets');
+  if (!fdDatasets.ok) {
+    return res.status(fdDatasets.status).json({
+      error: 'Bad Request',
+      message: fdDatasets.message
+    });
+  }
+  data = fdDatasets.data;
+
   // Resolve references if requested
   if (data && references !== 'none') {
     const resolved = data.map(item => resolveReferences(item, references));
@@ -919,13 +1198,18 @@ app.get('/ddi/v1/datasets/:datasetID', (req, res) => {
   const { datasetID } = req.params;
   const references = req.query.references || 'none';
   const data = loadMock('datasets.json');
-  const dataset = findById(data, datasetID);
-  if (dataset) {
-    const resolved = resolveReferences(dataset, references);
-    sendResponse(req, res, resolved, 'dataSet');
-  } else {
-    res.status(404).json({ error: 'Dataset not found' });
+  const result = findResourceForRequest(data, datasetID, req.query);
+  if (result.error === 'badrequest') {
+    return res.status(400).json({
+      error: 'Bad Request',
+      message: result.message
+    });
   }
+  if (!result.item) {
+    return res.status(404).json({ error: 'Dataset not found' });
+  }
+  const resolved = resolveReferences(result.item, references);
+  sendResponse(req, res, resolved, 'dataSet');
 });
 
 // Search endpoint - Search by labels
