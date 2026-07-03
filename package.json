@@ -29,6 +29,9 @@
   ],
   "author": "NicoLaval",
   "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
   "scarfSettings": {
     "enabled": false
   }
