@@ -34,7 +34,7 @@ info:
     
 servers:
   - description: Mock API Server
-    url: http://ddi-api.making-sense.info/ddi/v1
+    url: https://ddi-api.making-sense.info/ddi/v1
 
 tags:
   - name: Items
