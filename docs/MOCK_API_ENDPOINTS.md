@@ -44,6 +44,26 @@ The format is determined by the `Accept` header in your request.
 
 **Note:** Generic formats (`application/json`, `application/xml`, `text/xml`) are not supported and will return a `406 Not Acceptable` error.
 
+### Pagination (list endpoints)
+
+Type-specific **list** endpoints (`GET /variables`, `GET /concepts`, …) and **`GET /search/labels`** are **always paginated**. The DDI body stays an array / `ResourcePackage`; page metadata is in headers.
+
+| Query | Default | Notes |
+|-------|---------|--------|
+| `offset` | `0` | 0-based index into the **filtered** result set |
+| `limit` | `100` | Page size; maximum `1000` |
+
+Invalid `offset` / `limit` → **`400 Bad Request`**.
+
+Response headers:
+
+- **`Content-Range`**: `items {start}-{end}/{total}` on a non-empty page; `items */{total}` if the page is empty or `offset` is past the end (`start`/`end` are inclusive).
+- **`Link`**: RFC 8288 `rel="first"`, `prev`, `next`, `last` as applicable. Other query params and `limit` are preserved; only `offset` changes.
+
+Inspect headers with `curl -I` or `curl -D - -o /dev/null -s`. CORS exposes `Content-Range` and `Link`.
+
+**Not paginated:** single-item GETs and **`GET /ddi/v1/items`** (use a per-type list to page).
+
 ### Aggregated items (`GET /ddi/v1/items`)
 
 Use this first when you want the full mock corpus in one round-trip: all collections (variables, concepts, schemes, study units, datasets, …) are returned together as an **`ItemCatalog`** object in DDI JSON, or as one flattened `ResourcePackage` in DDI XML.
@@ -52,7 +72,7 @@ Filtering matches the **per-type list endpoints**: you can pass the **same query
 
 **Single item (polymorphic):** **`GET /ddi/v1/items/{itemIdentifier}`** — same resolution rules as type-specific item URLs: path may be a full **URN**, a **`{agencyID}:{id}:{version}`** triple (without `urn:ddi:`), or a **plain id** with **`agencyID`** and **`version`** in the query. The server walks collections in a fixed order and returns the first match (see OpenAPI).
 
-- **`offset`** / **`limit`**: applied **per collection** (as if you called each list endpoint with the same query).
+- **`offset` / `limit` are ignored** on this catalog (it is not paginated). Page through `GET /variables`, `GET /concepts`, etc. instead.
 - **`references`**: resolve nested references like on collection endpoints; payloads can be large.
 
 ### All Endpoints Supported
@@ -206,8 +226,10 @@ The `/ddi/v1/search/labels` endpoint allows you to search for DDI resources by m
 - **`q`** (required): Search query string. Case-insensitive partial matching.
 - **`lang`** (optional): Language code for label search (`en` or `fr`). Default: `en`
 - **`type`** (optional): Filter results by resource type. Can be one or more of: `Variable`, `Concept`, `ConceptScheme`, `VariableScheme`, `CodeList`, `CodeListScheme`, `CategoryScheme`, `Category`
-- **`offset`** (optional): Pagination offset. Default: `0`
-- **`limit`** (optional): Maximum number of results. Default: `100`, Maximum: `1000`
+- **`offset`** (optional): 0-based pagination offset. Default: `0`
+- **`limit`** (optional): Page size. Default: `100`, maximum: `1000`. Always applied.
+
+Pagination metadata is in **`Content-Range`** and **`Link`** (see **Pagination** above), not in the JSON body.
 
 **Examples:**
 
@@ -224,8 +246,8 @@ curl "http://localhost:4010/ddi/v1/search/labels?q=baseline&type=Variable"
 # Search in multiple resource types
 curl "http://localhost:4010/ddi/v1/search/labels?q=gender&type=Variable&type=Concept"
 
-# Search with pagination
-curl "http://localhost:4010/ddi/v1/search/labels?q=age&offset=0&limit=10"
+# Search with pagination (headers: Content-Range, Link)
+curl -I "http://localhost:4010/ddi/v1/search/labels?q=age&offset=0&limit=10"
 
 # Search in DDI XML format
 curl -H "Accept: application/vnd.ddi.structure+xml;version=3.3" "http://localhost:4010/ddi/v1/search/labels?q=age"
@@ -275,7 +297,7 @@ Each result contains:
 - Partial matching is performed (e.g., searching for "age" will match "Age at baseline" and "average")
 - Only labels in the specified language (`lang` parameter) are searched
 - If no `type` parameter is provided, all resource types are searched
-- Results are paginated using `offset` and `limit` parameters
+- Results are always paginated (`offset` / `limit`; default page size 100). See **Pagination**.
 
 ### Understanding the `references` Parameter
 
@@ -608,15 +630,23 @@ curl "http://localhost:4010/ddi/v1/variables?conceptReference=urn:ddi:example.ag
 
 ### Pagination
 
+Lists are **always** paginated (`limit` default 100, max 1000). Check headers, not the DDI body:
+
 ```bash
-# Get first 10 variables (offset 0, limit 10)
+# First 10 variables
 curl "http://localhost:4010/ddi/v1/variables?offset=0&limit=10"
 
-# Get next 10 variables
+# Next 10 variables
 curl "http://localhost:4010/ddi/v1/variables?offset=10&limit=10"
 
-# Get all variables starting from offset 5
+# Default page (limit=100) starting at offset 5
 curl "http://localhost:4010/ddi/v1/variables?offset=5"
+
+# Inspect Content-Range and Link
+curl -I "http://localhost:4010/ddi/v1/variables?limit=10"
+
+# Invalid limit → 400
+curl "http://localhost:4010/ddi/v1/variables?limit=abc"
 ```
 
 ### Combined Filters
@@ -669,8 +699,8 @@ All list endpoints support these query parameters:
 - **`agencyID`**: Filter by agency ID (supports multiple values)
 - **`resourceID`** or **`id`**: Filter by resource ID (supports multiple values)
 - **`version`**: Filter by version (supports multiple values)
-- **`offset`**: Pagination offset (number)
-- **`limit`**: Pagination limit (number)
+- **`offset`**: Pagination offset (number, default `0`)
+- **`limit`**: Page size (number, default `100`, maximum `1000`; always applied)
 - **`references`**: Resolve references (enum: `none` (default), `children`, or `all`)
 
 Endpoint-specific filters:

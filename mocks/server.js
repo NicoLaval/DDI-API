@@ -17,7 +17,10 @@ const PORT = process.env.PORT || 4010;
 const MOCKS_DIR = path.join(__dirname, 'data');
 const SPEC_PATH = path.join(__dirname, '..', 'ddi-rest.yaml');
 
-app.use(cors());
+app.use(cors({
+  exposedHeaders: ['Content-Range', 'Link']
+}));
+app.set('trust proxy', 1);
 app.use(express.json());
 
 // Helper to load JSON file
@@ -577,16 +580,6 @@ function filterData(data, query, resourceType = null) {
 
     filtered = filtered.filter(item => allowedDatasetIds.has(item.id));
   }
-  
-  // Pagination
-  const offset = parseInt(query.offset) || 0;
-  const limit = query.limit ? parseInt(query.limit) : undefined;
-  
-  if (limit !== undefined) {
-    filtered = filtered.slice(offset, offset + limit);
-  } else if (offset > 0) {
-    filtered = filtered.slice(offset);
-  }
 
   return { ok: true, data: filtered };
 }
@@ -864,6 +857,116 @@ function resolveReferences(obj, level, startDepth = 0, visited = new Set()) {
   return processObject(resolved, startDepth);
 }
 
+const DEFAULT_PAGE_LIMIT = 100;
+const MAX_PAGE_LIMIT = 1000;
+
+function firstQueryValue(value) {
+  if (value === undefined || value === null) return undefined;
+  return Array.isArray(value) ? value[0] : value;
+}
+
+/** Parse offset/limit query params (always paginate lists). */
+function parsePagination(query) {
+  let offset = 0;
+  let limit = DEFAULT_PAGE_LIMIT;
+
+  if (query.offset !== undefined && query.offset !== '') {
+    const raw = firstQueryValue(query.offset);
+    if (!/^\d+$/.test(String(raw))) {
+      return { ok: false, message: 'offset must be a non-negative integer.' };
+    }
+    offset = parseInt(raw, 10);
+  }
+
+  if (query.limit !== undefined && query.limit !== '') {
+    const raw = firstQueryValue(query.limit);
+    if (!/^\d+$/.test(String(raw))) {
+      return { ok: false, message: 'limit must be a positive integer (maximum 1000).' };
+    }
+    limit = parseInt(raw, 10);
+    if (limit < 1 || limit > MAX_PAGE_LIMIT) {
+      return { ok: false, message: 'limit must be a positive integer (maximum 1000).' };
+    }
+  }
+
+  return { ok: true, offset, limit };
+}
+
+function paginationQueryString(query, offset, limit) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (key === 'offset' || key === 'limit') continue;
+    const values = Array.isArray(value) ? value : [value];
+    for (const v of values) {
+      if (v === undefined || v === null || v === '') continue;
+      params.append(key, String(v));
+    }
+  }
+  params.set('offset', String(offset));
+  params.set('limit', String(limit));
+  return params.toString();
+}
+
+function pageUrl(req, offset, limit) {
+  return `${req.protocol}://${req.get('host')}${req.path}?${paginationQueryString(req.query, offset, limit)}`;
+}
+
+function setPaginationHeaders(req, res, { total, offset, limit }) {
+  const hasItems = total > 0 && offset < total;
+  if (!hasItems) {
+    res.set('Content-Range', `items */${total}`);
+  } else {
+    const end = Math.min(offset + limit, total) - 1;
+    res.set('Content-Range', `items ${offset}-${end}/${total}`);
+  }
+
+  const links = [];
+  if (total > 0) {
+    const lastOffset = Math.floor((total - 1) / limit) * limit;
+    links.push(`<${pageUrl(req, 0, limit)}>; rel="first"`);
+    links.push(`<${pageUrl(req, lastOffset, limit)}>; rel="last"`);
+    if (offset > 0) {
+      links.push(`<${pageUrl(req, Math.max(0, offset - limit), limit)}>; rel="prev"`);
+    }
+    if (offset + limit < total) {
+      links.push(`<${pageUrl(req, offset + limit, limit)}>; rel="next"`);
+    }
+  }
+  if (links.length > 0) {
+    res.set('Link', links.join(', '));
+  }
+}
+
+/** Filter, page, optionally resolve references, then send a collection GET. */
+function serveCollection(req, res, data, resourceType, rootElementName) {
+  const fd = filterData(data, req.query, resourceType);
+  if (!fd.ok) {
+    return res.status(fd.status).json({
+      error: 'Bad Request',
+      message: fd.message
+    });
+  }
+  const pageSpec = parsePagination(req.query);
+  if (!pageSpec.ok) {
+    return res.status(400).json({
+      error: 'Bad Request',
+      message: pageSpec.message
+    });
+  }
+  const references = req.query.references || 'none';
+  let items = Array.isArray(fd.data) ? fd.data : [];
+  const total = items.length;
+  items = items.slice(pageSpec.offset, pageSpec.offset + pageSpec.limit);
+  if (references !== 'none') {
+    items = items.map(item => resolveReferences(item, references));
+  }
+  sendResponse(req, res, items, rootElementName, {
+    total,
+    offset: pageSpec.offset,
+    limit: pageSpec.limit
+  });
+}
+
 // Helper to determine response format based on Accept header
 function getResponseFormat(req) {
   const accept = req.headers.accept || '';
@@ -897,7 +1000,11 @@ function getResponseFormat(req) {
 }
 
 // Helper to send response in appropriate format
-function sendResponse(req, res, data, rootElementName) {
+function sendResponse(req, res, data, rootElementName, pagination) {
+  if (pagination) {
+    setPaginationHeaders(req, res, pagination);
+  }
+
   const format = getResponseFormat(req);
   
   if (format === null) {
@@ -1002,26 +1109,7 @@ app.get('/ddi/v1/items/:itemIdentifier', (req, res) => {
 
 // Variables endpoints
 app.get('/ddi/v1/variables', (req, res) => {
-  const references = req.query.references || 'none';
-  let data = loadMock('variables.json');
-  
-  // Apply filters
-  const fdVariables = filterData(data, req.query, 'variables');
-  if (!fdVariables.ok) {
-    return res.status(fdVariables.status).json({
-      error: 'Bad Request',
-      message: fdVariables.message
-    });
-  }
-  data = fdVariables.data;
-
-  // Resolve references if requested
-  if (data && references !== 'none') {
-    const resolved = data.map(item => resolveReferences(item, references));
-    sendResponse(req, res, resolved, 'variables');
-  } else {
-    sendResponse(req, res, data || [], 'variables');
-  }
+  serveCollection(req, res, loadMock('variables.json'), 'variables', 'variables');
 });
 
 app.get('/ddi/v1/variables/:variableID', (req, res) => {
@@ -1044,26 +1132,7 @@ app.get('/ddi/v1/variables/:variableID', (req, res) => {
 
 // Concepts endpoints
 app.get('/ddi/v1/concepts', (req, res) => {
-  const references = req.query.references || 'none';
-  let data = loadMock('concepts.json');
-  
-  // Apply filters
-  const fdConcepts = filterData(data, req.query, 'concepts');
-  if (!fdConcepts.ok) {
-    return res.status(fdConcepts.status).json({
-      error: 'Bad Request',
-      message: fdConcepts.message
-    });
-  }
-  data = fdConcepts.data;
-
-  // Resolve references if requested
-  if (data && references !== 'none') {
-    const resolved = data.map(item => resolveReferences(item, references));
-    sendResponse(req, res, resolved, 'concepts');
-  } else {
-    sendResponse(req, res, data || [], 'concepts');
-  }
+  serveCollection(req, res, loadMock('concepts.json'), 'concepts', 'concepts');
 });
 
 app.get('/ddi/v1/concepts/:conceptID', (req, res) => {
@@ -1086,26 +1155,7 @@ app.get('/ddi/v1/concepts/:conceptID', (req, res) => {
 
 // Concept Schemes endpoints
 app.get('/ddi/v1/concept-schemes', (req, res) => {
-  const references = req.query.references || 'none';
-  let data = loadMock('concept-schemes.json');
-  
-  // Apply filters
-  const fdConceptSchemes = filterData(data, req.query);
-  if (!fdConceptSchemes.ok) {
-    return res.status(fdConceptSchemes.status).json({
-      error: 'Bad Request',
-      message: fdConceptSchemes.message
-    });
-  }
-  data = fdConceptSchemes.data;
-
-  // Resolve references if requested
-  if (data && references !== 'none') {
-    const resolved = data.map(item => resolveReferences(item, references));
-    sendResponse(req, res, resolved, 'conceptSchemes');
-  } else {
-    sendResponse(req, res, data || [], 'conceptSchemes');
-  }
+  serveCollection(req, res, loadMock('concept-schemes.json'), null, 'conceptSchemes');
 });
 
 app.get('/ddi/v1/concept-schemes/:conceptSchemeID', (req, res) => {
@@ -1128,26 +1178,7 @@ app.get('/ddi/v1/concept-schemes/:conceptSchemeID', (req, res) => {
 
 // Variable Schemes endpoints
 app.get('/ddi/v1/variable-schemes', (req, res) => {
-  const references = req.query.references || 'none';
-  let data = loadMock('variable-schemes.json');
-  
-  // Apply filters
-  const fdVarSchemes = filterData(data, req.query);
-  if (!fdVarSchemes.ok) {
-    return res.status(fdVarSchemes.status).json({
-      error: 'Bad Request',
-      message: fdVarSchemes.message
-    });
-  }
-  data = fdVarSchemes.data;
-
-  // Resolve references if requested
-  if (data && references !== 'none') {
-    const resolved = data.map(item => resolveReferences(item, references));
-    sendResponse(req, res, resolved, 'variableSchemes');
-  } else {
-    sendResponse(req, res, data || [], 'variableSchemes');
-  }
+  serveCollection(req, res, loadMock('variable-schemes.json'), null, 'variableSchemes');
 });
 
 app.get('/ddi/v1/variable-schemes/:variableSchemeID', (req, res) => {
@@ -1170,26 +1201,7 @@ app.get('/ddi/v1/variable-schemes/:variableSchemeID', (req, res) => {
 
 // Code Lists endpoints
 app.get('/ddi/v1/code-lists', (req, res) => {
-  const references = req.query.references || 'none';
-  let data = loadMock('code-lists.json');
-  
-  // Apply filters
-  const fdCodeLists = filterData(data, req.query, 'code-lists');
-  if (!fdCodeLists.ok) {
-    return res.status(fdCodeLists.status).json({
-      error: 'Bad Request',
-      message: fdCodeLists.message
-    });
-  }
-  data = fdCodeLists.data;
-
-  // Resolve references if requested
-  if (data && references !== 'none') {
-    const resolved = data.map(item => resolveReferences(item, references));
-    sendResponse(req, res, resolved, 'codeLists');
-  } else {
-    sendResponse(req, res, data || [], 'codeLists');
-  }
+  serveCollection(req, res, loadMock('code-lists.json'), 'code-lists', 'codeLists');
 });
 
 app.get('/ddi/v1/code-lists/:codeListID', (req, res) => {
@@ -1212,26 +1224,7 @@ app.get('/ddi/v1/code-lists/:codeListID', (req, res) => {
 
 // Code List Schemes endpoints
 app.get('/ddi/v1/code-list-schemes', (req, res) => {
-  const references = req.query.references || 'none';
-  let data = loadMock('code-list-schemes.json');
-  
-  // Apply filters
-  const fdCls = filterData(data, req.query);
-  if (!fdCls.ok) {
-    return res.status(fdCls.status).json({
-      error: 'Bad Request',
-      message: fdCls.message
-    });
-  }
-  data = fdCls.data;
-
-  // Resolve references if requested
-  if (data && references !== 'none') {
-    const resolved = data.map(item => resolveReferences(item, references));
-    sendResponse(req, res, resolved, 'codeListSchemes');
-  } else {
-    sendResponse(req, res, data || [], 'codeListSchemes');
-  }
+  serveCollection(req, res, loadMock('code-list-schemes.json'), null, 'codeListSchemes');
 });
 
 app.get('/ddi/v1/code-list-schemes/:codeListSchemeID', (req, res) => {
@@ -1254,26 +1247,7 @@ app.get('/ddi/v1/code-list-schemes/:codeListSchemeID', (req, res) => {
 
 // Category Schemes endpoints
 app.get('/ddi/v1/category-schemes', (req, res) => {
-  const references = req.query.references || 'none';
-  let data = loadMock('category-schemes.json');
-  
-  // Apply filters
-  const fdCatSchemes = filterData(data, req.query);
-  if (!fdCatSchemes.ok) {
-    return res.status(fdCatSchemes.status).json({
-      error: 'Bad Request',
-      message: fdCatSchemes.message
-    });
-  }
-  data = fdCatSchemes.data;
-
-  // Resolve references if requested
-  if (data && references !== 'none') {
-    const resolved = data.map(item => resolveReferences(item, references));
-    sendResponse(req, res, resolved, 'categorySchemes');
-  } else {
-    sendResponse(req, res, data || [], 'categorySchemes');
-  }
+  serveCollection(req, res, loadMock('category-schemes.json'), null, 'categorySchemes');
 });
 
 app.get('/ddi/v1/category-schemes/:categorySchemeID', (req, res) => {
@@ -1296,26 +1270,7 @@ app.get('/ddi/v1/category-schemes/:categorySchemeID', (req, res) => {
 
 // Study Units endpoints
 app.get('/ddi/v1/study-units', (req, res) => {
-  const references = req.query.references || 'none';
-  let data = loadMock('study-units.json');
-  
-  // Apply filters
-  const fdStudyUnits = filterData(data, req.query);
-  if (!fdStudyUnits.ok) {
-    return res.status(fdStudyUnits.status).json({
-      error: 'Bad Request',
-      message: fdStudyUnits.message
-    });
-  }
-  data = fdStudyUnits.data;
-
-  // Resolve references if requested
-  if (data && references !== 'none') {
-    const resolved = data.map(item => resolveReferences(item, references));
-    sendResponse(req, res, resolved, 'studyUnits');
-  } else {
-    sendResponse(req, res, data || [], 'studyUnits');
-  }
+  serveCollection(req, res, loadMock('study-units.json'), null, 'studyUnits');
 });
 
 app.get('/ddi/v1/study-units/:studyUnitID', (req, res) => {
@@ -1338,26 +1293,7 @@ app.get('/ddi/v1/study-units/:studyUnitID', (req, res) => {
 
 // Physical Instances endpoints
 app.get('/ddi/v1/physical-instances', (req, res) => {
-  const references = req.query.references || 'none';
-  let data = loadMock('physical-instances.json');
-  
-  // Apply filters
-  const fdPhys = filterData(data, req.query, 'physical-instances');
-  if (!fdPhys.ok) {
-    return res.status(fdPhys.status).json({
-      error: 'Bad Request',
-      message: fdPhys.message
-    });
-  }
-  data = fdPhys.data;
-
-  // Resolve references if requested
-  if (data && references !== 'none') {
-    const resolved = data.map(item => resolveReferences(item, references));
-    sendResponse(req, res, resolved, 'physicalInstances');
-  } else {
-    sendResponse(req, res, data || [], 'physicalInstances');
-  }
+  serveCollection(req, res, loadMock('physical-instances.json'), 'physical-instances', 'physicalInstances');
 });
 
 app.get('/ddi/v1/physical-instances/:physicalInstanceID', (req, res) => {
@@ -1380,26 +1316,7 @@ app.get('/ddi/v1/physical-instances/:physicalInstanceID', (req, res) => {
 
 // Datasets endpoints
 app.get('/ddi/v1/datasets', (req, res) => {
-  const references = req.query.references || 'none';
-  let data = loadMock('datasets.json');
-  
-  // Apply filters
-  const fdDatasets = filterData(data, req.query, 'datasets');
-  if (!fdDatasets.ok) {
-    return res.status(fdDatasets.status).json({
-      error: 'Bad Request',
-      message: fdDatasets.message
-    });
-  }
-  data = fdDatasets.data;
-
-  // Resolve references if requested
-  if (data && references !== 'none') {
-    const resolved = data.map(item => resolveReferences(item, references));
-    sendResponse(req, res, resolved, 'dataSets');
-  } else {
-    sendResponse(req, res, data || [], 'dataSets');
-  }
+  serveCollection(req, res, loadMock('datasets.json'), 'datasets', 'dataSets');
 });
 
 app.get('/ddi/v1/datasets/:datasetID', (req, res) => {
@@ -1425,8 +1342,13 @@ app.get('/ddi/v1/search/labels', (req, res) => {
   const query = req.query.q;
   const lang = req.query.lang || 'en';
   const types = req.query.type ? (Array.isArray(req.query.type) ? req.query.type : [req.query.type]) : null;
-  const offset = parseInt(req.query.offset) || 0;
-  const limit = parseInt(req.query.limit) || 100;
+  const pageSpec = parsePagination(req.query);
+  if (!pageSpec.ok) {
+    return res.status(400).json({
+      error: 'Bad Request',
+      message: pageSpec.message
+    });
+  }
 
   if (!query || query.trim().length === 0) {
     return res.status(400).json({ error: 'Query parameter "q" is required' });
@@ -1535,10 +1457,13 @@ app.get('/ddi/v1/search/labels', (req, res) => {
     });
   }
 
-  // Apply pagination
-  const paginatedResults = results.slice(offset, offset + limit);
+  const paginatedResults = results.slice(pageSpec.offset, pageSpec.offset + pageSpec.limit);
 
-  sendResponse(req, res, paginatedResults, 'searchResults');
+  sendResponse(req, res, paginatedResults, 'searchResults', {
+    total: results.length,
+    offset: pageSpec.offset,
+    limit: pageSpec.limit
+  });
 });
 
 // Health check endpoint (for Render and other services to prevent sleep)
@@ -1616,7 +1541,15 @@ app.get('/', (req, res) => {
       },
       filtering: {
         description: 'Filter resources by various criteria',
-        supported: ['urn', 'agencyID', 'resourceID', 'version', 'offset', 'limit']
+        supported: ['urn', 'agencyID', 'resourceID', 'version']
+      },
+      pagination: {
+        description: 'Always applied on type-specific list endpoints and GET /search/labels. Metadata is in Content-Range and Link headers (not the DDI body). GET /items is not paginated.',
+        query: {
+          offset: { default: 0, description: '0-based start index' },
+          limit: { default: 100, maximum: 1000, description: 'Page size' }
+        },
+        headers: ['Content-Range', 'Link']
       }
     }
   });

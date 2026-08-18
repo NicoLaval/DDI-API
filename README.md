@@ -28,6 +28,12 @@ If a plain ID is used without both `agencyID` and `version`, the API responds wi
 
 Examples in the [mock endpoints guide](docs/MOCK_API_ENDPOINTS.md) use `agencyID=example.agency` and `version=1.0.0` for plain identifiers.
 
+### Pagination
+
+**List** endpoints (`GET /ddi/v1/variables`, `GET /ddi/v1/concepts`, `GET /ddi/v1/search/labels`, …) are always paginated: `limit` defaults to **100** (max **1000**), `offset` defaults to **0**. The DDI payload is unchanged; page metadata is in **`Content-Range`** and **`Link`**. Invalid values return **`400`**.
+
+**`GET /ddi/v1/items`** and single-item GETs are **not** paginated. Details: [Mock API Endpoints](docs/MOCK_API_ENDPOINTS.md#pagination-list-endpoints).
+
 ## OpenAPI Specification
 
 The API specification is available in the `ddi-rest.yaml` file in OpenAPI 3.1.1 format.
